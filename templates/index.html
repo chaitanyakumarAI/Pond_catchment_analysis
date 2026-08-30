@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Pond Catchment Analysis & Terrain Engine</title>
+  
+  <!-- Google Fonts & Leaflet CSS -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  
+  <!-- FontAwesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Sidebar / Control Panel -->
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-icon">
+          <i class="fa-solid fa-water"></i>
+        </div>
+        <div>
+          <h2>AquaTerrain AI</h2>
+          <p>Pond Catchment Analysis System</p>
+        </div>
+      </div>
+
+      <!-- File Upload Card -->
+      <div class="card upload-card">
+        <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Contour Map</h3>
+        <p class="subtitle">Upload a KML or KMZ contour map to identify optimal pond locations & estimate catchment areas.</p>
+        
+        <form id="uploadForm" enctype="multipart/form-data">
+          <div class="drop-zone" id="dropZone">
+            <i class="fa-solid fa-map-location-dot drop-icon"></i>
+            <span class="drop-text">Drag & drop <b>.KML</b> or <b>.KMZ</b> file here</span>
+            <span class="drop-subtext">or click to browse files</span>
+            <input type="file" id="fileInput" name="file" accept=".kml,.kmz" hidden>
+          </div>
+          <div class="file-name-display" id="fileNameDisplay"></div>
+          
+          <button type="submit" class="btn btn-primary" id="btnAnalyze" disabled>
+            <i class="fa-solid fa-microchip"></i> Analyze Terrain & Catchment
+          </button>
+        </form>
+
+        <div class="divider"><span>OR DEMO</span></div>
+
+        <button class="btn btn-outline" id="btnSample">
+          <i class="fa-solid fa-flask"></i> Run Sample Map (contours_1m.kml)
+        </button>
+      </div>
+
+      <!-- Analysis Results Dashboard -->
+      <div class="results-container" id="resultsContainer" style="display: none;">
+        
+        <div class="card metrics-card">
+          <h3><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
+          <div class="metrics-grid">
+            <div class="metric-item highlight">
+              <span class="metric-label">Catchment Area</span>
+              <span class="metric-value" id="valAreaHa">0 ha</span>
+              <span class="metric-sub" id="valAreaM2">0 m² / 0 acres</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-label">Optimal Pond Site</span>
+              <span class="metric-value" id="valPondCoords">0.0, 0.0</span>
+              <span class="metric-sub" id="valPondElev">Elev: 0m | Score: 0%</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-label">Annual Water Runoff</span>
+              <span class="metric-value" id="valRunoffM3">0 m³</span>
+              <span class="metric-sub" id="valRunoffLiters">0 Liters</span>
+            </div>
+            <div class="metric-item">
+              <span class="metric-label">Recommended Capacity</span>
+              <span class="metric-value" id="valPondCap">0 m³</span>
+              <span class="metric-sub" id="valPondDims">Depth 3.5m</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Terrain Statistics -->
+        <div class="card stats-card">
+          <h3><i class="fa-solid fa-mountain-sun"></i> Terrain Statistics</h3>
+          <ul class="stats-list">
+            <li><span>Min / Max Elevation:</span> <b id="valElevRange">0m - 0m</b></li>
+            <li><span>Average Terrain Slope:</span> <b id="valSlope">0°</b></li>
+            <li><span>Coverage Dimensions:</span> <b id="valCoverage">0m x 0m</b></li>
+            <li><span>Contour Count:</span> <b id="valContours">0 lines</b></li>
+          </ul>
+        </div>
+
+        <!-- JSON Response Collapsible -->
+        <div class="card json-card">
+          <div class="json-header" id="toggleJson">
+            <h3><i class="fa-solid fa-code"></i> API JSON Response</h3>
+            <i class="fa-solid fa-chevron-down toggle-icon"></i>
+          </div>
+          <div class="json-body" id="jsonBody" style="display: none;">
+            <pre><code id="jsonPre">{}</code></pre>
+          </div>
+        </div>
+
+      </div>
+    </aside>
+
+    <!-- Main Map Display -->
+    <main class="map-view">
+      <div id="map"></div>
+
+      <!-- Loading Overlay -->
+      <div class="loader-overlay" id="loaderOverlay" style="display: none;">
+        <div class="spinner"></div>
+        <h4>Analyzing Contour Terrain & Delineating Catchment...</h4>
+        <p>Interpolating DEM grid • Computing D8 Flow Directions • Calculating Water Yield</p>
+      </div>
+
+      <!-- Map Floating Header -->
+      <div class="map-header-badge">
+        <span class="badge-dot"></span>
+        <span id="mapStatusText">Upload a contour map to begin terrain analysis</span>
+      </div>
+    </main>
+  </div>
+
+  <!-- Leaflet JS -->
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
