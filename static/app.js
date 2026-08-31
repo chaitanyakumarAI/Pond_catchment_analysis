@@ -331,4 +331,124 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  // ── Interactive 3D WebGL Terrain Renderer (Plotly.js) ───────────────────
+  const modal3D        = document.getElementById('modal3D');
+  const btn3DTerrain   = document.getElementById('btn3DTerrain');
+  const close3D        = document.getElementById('close3D');
+  const btnReset3D     = document.getElementById('btnReset3D');
+  const plotly3DLoading= document.getElementById('plotly3DLoading');
+  let plotly3DData = null;
+
+  if (btn3DTerrain) {
+    btn3DTerrain.addEventListener('click', async () => {
+      modal3D.style.display = 'block';
+      plotly3DLoading.style.display = 'flex';
+
+      try {
+        const res  = await fetch('/api/terrain_3d_mesh');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed to fetch 3D mesh');
+
+        plotly3DData = data;
+        renderPlotly3DTerrain(data);
+        plotly3DLoading.style.display = 'none';
+      } catch (err) {
+        plotly3DLoading.innerHTML = `<p style="color:#ef4444;"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</p>`;
+      }
+    });
+  }
+
+  function renderPlotly3DTerrain(data) {
+    if (typeof Plotly === 'undefined') {
+      plotly3DLoading.innerHTML = `<p style="color:#ef4444;">Plotly library failed to load. Please check your internet connection.</p>`;
+      return;
+    }
+
+    const surfaceTrace = {
+      type: 'surface',
+      x: data.x,
+      y: data.y,
+      z: data.z,
+      colorscale: 'Earth',
+      reversescale: false,
+      contours: {
+        z: { show: true, usecolormap: true, highlightcolor: '#4299e1', project: { z: true } }
+      },
+      colorbar: {
+        title: { text: 'Elevation (m)', side: 'right' },
+        thickness: 15,
+        len: 0.7,
+        tickfont: { color: '#94a3b8' },
+        titlefont: { color: '#10B981' }
+      }
+    };
+
+    const candX = data.candidates.map(c => c.longitude);
+    const candY = data.candidates.map(c => c.latitude);
+    const candZ = data.candidates.map(c => c.elevation_m + 1.5);
+    const candText = data.candidates.map(c => `${c.label}<br>Elev: ${c.elevation_m}m`);
+    const candColors = data.candidates.map(c => c.color);
+
+    const scatterTrace = {
+      type: 'scatter3d',
+      mode: 'markers+text',
+      x: candX,
+      y: candY,
+      z: candZ,
+      text: data.candidates.map(c => `Site #${c.rank}`),
+      textposition: 'top center',
+      textfont: { color: '#ffffff', size: 12, family: 'Inter' },
+      hoverinfo: 'text',
+      hovertext: candText,
+      marker: {
+        size: 9,
+        color: candColors,
+        symbol: 'diamond',
+        line: { color: '#ffffff', width: 2 }
+      }
+    };
+
+    const layout = {
+      margin: { l: 0, r: 0, b: 0, t: 0 },
+      paper_bgcolor: '#090d16',
+      plot_bgcolor: '#090d16',
+      scene: {
+        xaxis: { title: 'Longitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
+        yaxis: { title: 'Latitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
+        zaxis: { 
+          title: 'Elevation (m)', 
+          titlefont: { color: '#10B981' }, 
+          tickfont: { color: '#64748b' }, 
+          gridcolor: '#1e293b',
+          range: [250, 300]
+        },
+        camera: {
+          eye: { x: 1.55, y: -1.55, z: 0.95 }
+        }
+      }
+    };
+
+    const config = {
+      responsive: true,
+      displayModeBar: true,
+      modeBarButtonsToRemove: ['toImage'],
+      displaylogo: false
+    };
+
+    Plotly.newPlot('plotly3DContainer', [surfaceTrace, scatterTrace], layout, config);
+  }
+
+  if (btnReset3D) {
+    btnReset3D.addEventListener('click', () => {
+      if (plotly3DData) renderPlotly3DTerrain(plotly3DData);
+    });
+  }
+
+  if (close3D) {
+    close3D.addEventListener('click', () => { modal3D.style.display = 'none'; });
+  }
+  modal3D && modal3D.addEventListener('click', (e) => {
+    if (e.target === modal3D) modal3D.style.display = 'none';
+  });
+
 });

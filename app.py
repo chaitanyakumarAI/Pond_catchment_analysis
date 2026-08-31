@@ -141,6 +141,50 @@ def get_plots():
         return jsonify({'success': False, 'error': str(e),
                         'details': traceback.format_exc()}), 500
 
+@app.route('/api/terrain_3d_mesh', methods=['GET'])
+def get_terrain_3d_mesh():
+    """Return 3D grid data for interactive WebGL rendering using Plotly.js."""
+    global _last_result
+    try:
+        if _last_result is None:
+            parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
+            _last_result = analyze_terrain_and_catchment(parsed_data)
+
+        r = _last_result
+        dem_raw = r['_dem_raw']
+        gx = r['_gx_wgs']
+        gy = r['_gy_wgs']
+
+        nr, nc = dem_raw.shape
+        step = max(1, min(nr, nc) // 80)
+
+        x_vals = gx[::step].tolist()
+        y_vals = gy[::step].tolist()
+        z_vals = dem_raw[::step, ::step].tolist()
+
+        cands = []
+        for c in r['all_candidate_sites']:
+            cands.append({
+                'rank': c['rank'],
+                'longitude': c['pond_location']['longitude'],
+                'latitude': c['pond_location']['latitude'],
+                'elevation_m': c['pond_location']['elevation_m'],
+                'color': c['color'],
+                'area_ha': c['catchment_summary']['area_hectares'],
+                'label': f"Site #{c['rank']} ({c['catchment_summary']['area_hectares']} ha)"
+            })
+
+        return jsonify({
+            'success': True,
+            'x': x_vals,
+            'y': y_vals,
+            'z': z_vals,
+            'candidates': cands,
+            'z_range': [250, 300]
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/')
 def index():

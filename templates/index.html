@@ -10,6 +10,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -76,6 +77,9 @@
           <button class="btn btn-primary" id="btnTerrainPlots" style="width:100%">
             <i class="fa-solid fa-chart-area"></i> View Terrain Analysis Plots
           </button>
+          <button class="btn btn-outline" id="btn3DTerrain" style="width:100%;margin-top:8px;border-color:#10B981;color:#10B981;">
+            <i class="fa-solid fa-cube"></i> Interactive 3D Terrain (360° Rotate)
+          </button>
         </div>
 
         <div class="card stats-card">
@@ -130,6 +134,36 @@
         <p style="margin-top:16px;font-size:15px;">Generating 6 terrain analysis plots — 3D elevation, slope, flow, TWI, depressions...</p>
       </div>
       <div id="plotsGrid" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Interactive 3D WebGL Modal -->
+  <div id="modal3D" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.96);z-index:10000;overflow:hidden;padding:16px;">
+    <div style="width:96%;height:96%;margin:0 auto;background:#090d16;border-radius:16px;border:1px solid #1e293b;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:#0f172a;border-bottom:1px solid #1e293b;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h2 style="color:#10B981;font-family:Outfit,sans-serif;margin:0;font-size:19px;">
+            <i class="fa-solid fa-cube"></i> Interactive 3D WebGL Terrain Elevation Model
+          </h2>
+          <span style="background:#1e293b;color:#94a3b8;font-size:12px;padding:4px 12px;border-radius:20px;">
+            <i class="fa-solid fa-arrows-spin"></i> Click &amp; Drag to Rotate 360° | Scroll to Zoom | Right-click to Pan
+          </span>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button id="btnReset3D" style="background:#334155;border:none;color:#fff;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;">
+            <i class="fa-solid fa-rotate-left"></i> Reset 3D View
+          </button>
+          <button id="close3D" style="background:#ef4444;border:none;color:#fff;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:600;">
+            <i class="fa-solid fa-xmark"></i> Close
+          </button>
+        </div>
+      </div>
+      <div id="plotly3DContainer" style="flex:1;width:100%;height:100%;position:relative;">
+        <div id="plotly3DLoading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#94a3b8;">
+          <i class="fa-solid fa-spinner fa-spin" style="font-size:40px;color:#10B981;"></i>
+          <p style="margin-top:16px;font-size:16px;">Building WebGL 3D Mesh Surface &amp; Floating Pond Sites...</p>
+        </div>
+      </div>
     </div>
   </div>
 

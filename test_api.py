@@ -36,9 +36,18 @@ def test_upload_route():
     print("File Upload Status: SUCCESS [OK]")
     print("Analyzed Contours:", data['data']['input_file_info']['contour_count'])
 
+def test_3d_mesh_route():
+    print("\nTesting /api/terrain_3d_mesh endpoint...")
+    r = requests.get(f"{BASE_URL}/api/terrain_3d_mesh")
+    assert r.status_code == 200
+    data = r.json()
+    assert data['success'] == True
+    print(f"3D Mesh Data OK: {len(data['x'])}x{len(data['y'])} grid with {len(data['candidates'])} pond candidates.")
+
 if __name__ == '__main__':
     print("Starting API Verification Test Suite...")
     test_health()
     test_sample_route()
     test_upload_route()
+    test_3d_mesh_route()
     print("\nAll API Verification Tests Passed Successfully!")
