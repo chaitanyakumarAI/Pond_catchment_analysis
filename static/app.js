@@ -259,10 +259,63 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById('valPondDims').textContent = `${water.recommended_dimensions_m} (${water.recommended_pond_depth_m}m depth)`;
   }
 
-  // Collapsible JSON Toggle
-  document.getElementById('toggleJson').addEventListener('click', () => {
-    const jsonBody = document.getElementById('jsonBody');
-    const isHidden = jsonBody.style.display === 'none';
-    jsonBody.style.display = isHidden ? 'block' : 'none';
+  // ── Terrain Plots Modal ─────────────────────────────────────────────────
+  const plotsModal   = document.getElementById('plotsModal');
+  const plotsLoading = document.getElementById('plotsLoading');
+  const plotsGrid    = document.getElementById('plotsGrid');
+  const btnTerrain   = document.getElementById('btnTerrainPlots');
+  const closePlots   = document.getElementById('closePlots');
+
+  const PLOT_LABELS = {
+    '3d_elevation':     { title: '3D Terrain Elevation Surface', icon: 'fa-mountain' },
+    'dem_heatmap':      { title: 'DEM Heatmap + Candidate Sites', icon: 'fa-map' },
+    'slope_map':        { title: 'Slope Map (Horn\'s 8-Neighbour)', icon: 'fa-angles-up' },
+    'flow_accumulation':{ title: 'D8 Flow Accumulation (log scale)', icon: 'fa-water' },
+    'twi_map':          { title: 'Topographic Wetness Index (TWI)', icon: 'fa-droplet' },
+    'depression_map':   { title: 'Terrain Depression Depth (Sinks)', icon: 'fa-arrow-trend-down' },
+  };
+
+  if (btnTerrain) {
+    btnTerrain.addEventListener('click', async () => {
+      plotsModal.style.display = 'block';
+      plotsLoading.style.display = 'block';
+      plotsGrid.style.display   = 'none';
+      plotsGrid.innerHTML       = '';
+
+      try {
+        const res  = await fetch('/api/plots');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Plot generation failed');
+
+        Object.entries(data.plots).forEach(([key, b64]) => {
+          const meta = PLOT_LABELS[key] || { title: key, icon: 'fa-image' };
+          const card = document.createElement('div');
+          card.style.cssText = 'background:#1e293b;border-radius:12px;overflow:hidden;border:1px solid #334155;';
+          card.innerHTML = `
+            <div style="padding:10px 14px;background:#0f172a;border-bottom:1px solid #334155;">
+              <h4 style="margin:0;color:#10B981;font-size:13px;font-family:Inter,sans-serif;">
+                <i class="fa-solid ${meta.icon}" style="margin-right:6px;"></i>${meta.title}
+              </h4>
+            </div>
+            <img src="data:image/png;base64,${b64}" style="width:100%;display:block;" alt="${meta.title}">
+          `;
+          plotsGrid.appendChild(card);
+        });
+
+        plotsGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;';
+        plotsLoading.style.display = 'none';
+        plotsGrid.style.display    = 'grid';
+      } catch (err) {
+        plotsLoading.innerHTML = `<p style="color:#ef4444;"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</p>`;
+      }
+    });
+  }
+
+  if (closePlots) {
+    closePlots.addEventListener('click', () => { plotsModal.style.display = 'none'; });
+  }
+  plotsModal && plotsModal.addEventListener('click', (e) => {
+    if (e.target === plotsModal) plotsModal.style.display = 'none';
   });
+
 });

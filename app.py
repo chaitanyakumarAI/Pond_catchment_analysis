@@ -5,7 +5,9 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 
 from kml_parser import parse_kml_or_kmz
-from terrain_analyzer import analyze_terrain_and_catchment
+from terrain_analyzer import analyze_terrain_and_catchment, generate_plots
+
+_last_result = None   # cache last analysis for /api/plots
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
@@ -34,7 +36,7 @@ def process_file_upload(file_obj):
     # Parse KML / KMZ
     parsed_data = parse_kml_or_kmz(file_obj)
 
-    # Perform Terrain & Catchment Analysis
+    global _last_result
     results = analyze_terrain_and_catchment(parsed_data)
     results['input_file_info'] = {
         'filename': filename,
@@ -42,7 +44,9 @@ def process_file_upload(file_obj):
         'contour_count': parsed_data['elevation_stats']['contour_count'],
         'total_parsed_points': parsed_data['elevation_stats']['total_points']
     }
-    return results
+    _last_result = results   # cache (includes numpy arrays for /api/plots)
+    # Return a clean copy without numpy arrays
+    return {k: v for k, v in results.items() if not k.startswith('_')}
 
 @app.route('/analyzeContour', methods=['POST'])
 @app.route('/findCatchment', methods=['POST'])
@@ -86,6 +90,7 @@ def analyze_sample_route():
         if not os.path.exists(SAMPLE_KML_PATH):
             return jsonify({'error': 'Sample KML file contours_1m.kml not found on server.'}), 404
 
+        global _last_result
         parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
         results = analyze_terrain_and_catchment(parsed_data)
         results['input_file_info'] = {
@@ -94,14 +99,48 @@ def analyze_sample_route():
             'contour_count': parsed_data['elevation_stats']['contour_count'],
             'total_parsed_points': parsed_data['elevation_stats']['total_points']
         }
+        _last_result = results
+        clean = {k: v for k, v in results.items() if not k.startswith('_')}
         return jsonify({
             'success': True,
             'message': 'Sample contour map (contours_1m.kml) analyzed successfully.',
-            'data': results
+            'data': clean
         }), 200
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/plots', methods=['GET'])
+def get_plots():
+    """Generate and return base64 terrain analysis plots from cached last analysis."""
+    global _last_result
+    try:
+        if _last_result is None:
+            # Auto-run sample if not yet analyzed
+            parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
+            _last_result = analyze_terrain_and_catchment(parsed_data)
+
+        r = _last_result
+        from pyproj import Transformer
+        epsg = r['terrain_statistics']['utm_projection']
+        t2w  = Transformer.from_crs(epsg, 'EPSG:4326', always_xy=True)
+
+        plots = generate_plots(
+            dem_raw    = r['_dem_raw'],
+            dem_filled = r['_dem_filled'],
+            slope      = r['_slope'],
+            flow_acc   = r['_flow_acc'],
+            twi        = r['_twi'],
+            grid_x     = r['_gx_wgs'],
+            grid_y     = r['_gy_wgs'],
+            candidates = r['all_candidate_sites'],
+            to_wgs84   = t2w
+        )
+        return jsonify({'success': True, 'plots': plots}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e),
+                        'details': traceback.format_exc()}), 500
+
 
 @app.route('/')
 def index():
