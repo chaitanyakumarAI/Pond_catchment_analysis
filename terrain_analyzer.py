@@ -3,7 +3,7 @@ Pond Analysis Engine v5 — Bug-fixed + Visualization
 Critical fix: depression_depth = filled_dem - raw_dem (not gaussian - raw)
 New: /api/plots returns base64 terrain images (3D elev, slope, TWI, flow)
 """
-import math, heapq, io, base64
+import math, heapq, io, base64, os
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter, distance_transform_edt, maximum_filter
@@ -81,9 +81,20 @@ def _shapely_poly(cells,gx,gy,cx,cy,t2w):
     poly=max(u.geoms,key=lambda g:g.area) if u.geom_type=='MultiPolygon' else u
     return tr(poly.exterior.coords)
 
-def _b64(fig):
-    buf=io.BytesIO(); fig.savefig(buf,format='png',dpi=90,bbox_inches='tight'); plt.close(fig)
-    buf.seek(0); return base64.b64encode(buf.read()).decode()
+PLOTS_DIR = os.path.join(os.path.dirname(__file__), 'outputs', 'plots')
+os.makedirs(PLOTS_DIR, exist_ok=True)
+
+def _b64(fig, name='plot'):
+    """Save fig as PNG locally and return base64 string."""
+    # Save local file
+    fpath = os.path.join(PLOTS_DIR, f"{name}.png")
+    fig.savefig(fpath, format='png', dpi=100, bbox_inches='tight')
+    # Also encode to base64 for API response
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=90, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
 
 # ── plot generators ───────────────────────────────────────────────────────────
 
@@ -110,7 +121,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
     ax.set_title('3D Terrain Elevation + Pond Sites',fontsize=12,fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
     ax.view_init(elev=35,azim=-60)
-    fig.tight_layout(); plots['3d_elevation']=_b64(fig)
+    fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')
 
     # 2. DEM Hillshade + Pond overlay
     fig,ax=plt.subplots(figsize=(8,6))
@@ -123,7 +134,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
                 label=f"Site #{cand['rank']} ({cand['catchment_summary']['area_hectares']} ha)")
     ax.legend(fontsize=8,loc='upper right'); ax.set_title('DEM Heatmap + Candidate Pond Sites',fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
-    fig.tight_layout(); plots['dem_heatmap']=_b64(fig)
+    fig.tight_layout(); plots['dem_heatmap']=_b64(fig, 'dem_heatmap')
 
     # 3. Slope Map
     fig,ax=plt.subplots(figsize=(8,6))
@@ -135,7 +146,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
         ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
     ax.set_title('Slope Map  (green=flat, red=steep)',fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
-    fig.tight_layout(); plots['slope_map']=_b64(fig)
+    fig.tight_layout(); plots['slope_map']=_b64(fig, 'slope_map')
 
     # 4. Flow Accumulation (log scale)
     fig,ax=plt.subplots(figsize=(8,6))
@@ -147,7 +158,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
         ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
     ax.set_title('D8 Flow Accumulation (log scale)  — dark blue = river',fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
-    fig.tight_layout(); plots['flow_accumulation']=_b64(fig)
+    fig.tight_layout(); plots['flow_accumulation']=_b64(fig, 'flow_accumulation')
 
     # 5. TWI Map
     fig,ax=plt.subplots(figsize=(8,6))
@@ -159,7 +170,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
         ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
     ax.set_title('Topographic Wetness Index  (high = natural water accumulation zones)',fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
-    fig.tight_layout(); plots['twi_map']=_b64(fig)
+    fig.tight_layout(); plots['twi_map']=_b64(fig, 'twi_map')
 
     # 6. Depression Depth (filled - raw)
     dep=dem_filled - dem_raw
@@ -172,7 +183,7 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
         ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
     ax.set_title('Terrain Depressions / Sinks  (blue = natural basins)',fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
-    fig.tight_layout(); plots['depression_map']=_b64(fig)
+    fig.tight_layout(); plots['depression_map']=_b64(fig, 'depression_map')
 
     return plots
 
@@ -351,7 +362,10 @@ if __name__=='__main__':
     t0=time.time()
     d=parse_kml_or_kmz('contours_1m.kml')
     r=analyze_terrain_and_catchment(d)
-    print(f"[{time.time()-t0:.2f}s] {r['total_catchments_detected']} sites | buf={r['terrain_statistics']['river_buffer_used_m']}m")
+    epsg = r['terrain_statistics']['utm_projection']
+    t2w  = Transformer.from_crs(epsg, 'EPSG:4326', always_xy=True)
+    generate_plots(r['_dem_raw'], r['_dem_filled'], r['_slope'], r['_flow_acc'], r['_twi'], r['_gx_wgs'], r['_gy_wgs'], r['all_candidate_sites'], t2w)
+    print(f"[{time.time()-t0:.2f}s] {r['total_catchments_detected']} sites | buf={r['terrain_statistics']['river_buffer_used_m']}m | Plots saved to outputs/plots/")
     for c in r['all_candidate_sites']:
         l=c['pond_location']; cs=c['catchment_summary']
         print(f"  #{c['rank']} {l['latitude']:.5f},{l['longitude']:.5f} | dep={l['depression_depth_m']}m | TWI={l['twi']} | {cs['area_hectares']}ha | {l['suitability_score_pct']}%")

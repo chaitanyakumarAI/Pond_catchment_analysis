@@ -18,8 +18,8 @@ document.addEventListener('DOMContentLoaded', () => {
     maxZoom: 18
   });
 
-  // Default to Street Map
-  streetMap.addTo(map);
+  // Default to Satellite View so field boundaries and terrain are instantly visible
+  satelliteMap.addTo(map);
 
   // Add Layer Control widget (Street, Terrain Topo, Satellite)
   const baseMaps = {
@@ -317,5 +317,17 @@ document.addEventListener('DOMContentLoaded', () => {
   plotsModal && plotsModal.addEventListener('click', (e) => {
     if (e.target === plotsModal) plotsModal.style.display = 'none';
   });
+
+  // Collapsible JSON Toggle
+  const toggleJson = document.getElementById('toggleJson');
+  if (toggleJson) {
+    toggleJson.addEventListener('click', () => {
+      const jsonBody = document.getElementById('jsonBody');
+      if (jsonBody) {
+        const isHidden = jsonBody.style.display === 'none';
+        jsonBody.style.display = isHidden ? 'block' : 'none';
+      }
+    });
+  }
 
 });
