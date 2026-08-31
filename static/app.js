@@ -148,43 +148,61 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // Populate Map Layers from GeoJSON
+    const geoBounds = [];
     if (data.geojson_layers && data.geojson_layers.features) {
       L.geoJSON(data.geojson_layers, {
         style: (feature) => {
           const color = feature.properties.color || '#06B6D4';
           return {
             color: color,
-            weight: 2.5,
-            opacity: 0.9,
+            weight: 3,
+            opacity: 1.0,
             fillColor: color,
-            fillOpacity: 0.25,
-            dashArray: '5, 5'
+            fillOpacity: 0.30,
+            dashArray: '6, 4'
           };
         },
         pointToLayer: (feature, latlng) => {
           const color = feature.properties.color || '#10B981';
+          const p = feature.properties;
+          geoBounds.push([latlng.lat, latlng.lng]);
           return L.circleMarker(latlng, {
-            radius: 9,
+            radius: 10,
             fillColor: color,
             color: '#FFFFFF',
             weight: 3,
             opacity: 1,
             fillOpacity: 0.95
           }).bindPopup(`
-            <div style="font-family: Inter, sans-serif;">
-              <h4 style="margin:0 0 4px; color:${color};">Candidate Site #${feature.properties.rank}</h4>
-              <b>Elevation:</b> ${feature.properties.elevation_m} m<br>
-              <b>Catchment:</b> ${feature.properties.area_ha} Hectares<br>
-              <b>Suitability:</b> ${feature.properties.suitability_score}%
+            <div style="font-family:Inter,sans-serif;min-width:190px">
+              <h4 style="margin:0 0 6px;color:${color};font-size:14px">📍 Candidate Site #${p.rank}</h4>
+              <table style="width:100%;font-size:12px;border-collapse:collapse">
+                <tr><td><b>Elevation</b></td><td>${p.elevation_m} m</td></tr>
+                <tr><td><b>Catchment</b></td><td>${p.area_ha} ha</td></tr>
+                <tr><td><b>Suitability</b></td><td>${p.suitability_score}%</td></tr>
+                <tr><td><b>River Dist</b></td><td>${p.river_distance_m} m away</td></tr>
+                <tr><td><b>Depression</b></td><td>${p.depression_depth_m} m deep</td></tr>
+                <tr><td><b>TWI</b></td><td>${p.twi || 'N/A'}</td></tr>
+              </table>
             </div>
           `);
+        },
+        onEachFeature: (feature, layer) => {
+          if (feature.geometry.type === 'Polygon') {
+            const coords = feature.geometry.coordinates[0];
+            coords.forEach(c => geoBounds.push([c[1], c[0]]));
+          }
         }
       }).addTo(layerGroup);
     }
 
-    // Set map view to primary pond
-    const primaryPond = data.pond_location;
-    map.setView([primaryPond.latitude, primaryPond.longitude], 14);
+    // Fit map to show all catchments
+    if (geoBounds.length > 0) {
+      map.fitBounds(geoBounds, { padding: [30, 30] });
+    } else {
+      const primaryPond = data.pond_location;
+      map.setView([primaryPond.latitude, primaryPond.longitude], 14);
+    }
 
     // Populate Sidebar Metrics for Rank 1
     displayCandidateMetrics(candidates[0]);
@@ -192,9 +210,9 @@ document.addEventListener('DOMContentLoaded', () => {
     // Terrain Stats
     const stats = data.terrain_statistics || {};
     document.getElementById('valElevRange').textContent = `${stats.min_elevation_m || 0}m - ${stats.max_elevation_m || 0}m`;
-    document.getElementById('valSlope').textContent = `${stats.avg_slope_deg || 0}°`;
-    document.getElementById('valCoverage').textContent = `${stats.map_width_meters || 0}m x ${stats.map_height_meters || 0}m`;
-    document.getElementById('valContours').textContent = `${data.input_file_info ? data.input_file_info.contour_count : '2,711'} lines`;
+    document.getElementById('valSlope').textContent = `${stats.avg_slope_deg || 0}° avg | TWI ${stats.avg_twi || 'N/A'}`;
+    document.getElementById('valCoverage').textContent = `${stats.map_width_meters || 0}m x ${stats.map_height_meters || 0}m | Buffer: ${stats.river_buffer_used_m || 0}m`;
+    document.getElementById('valContours').textContent = `${data.input_file_info ? data.input_file_info.contour_count : '2,711'} lines | ${stats.utm_projection || 'WGS84'}`;
 
     // JSON Collapsible
     document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);

@@ -1,0 +1,6 @@
+flask==3.0.3
+flask-cors==5.0.1
+numpy==2.1.1
+scipy==1.17.1
+pyproj==3.7.2
+shapely==2.1.2

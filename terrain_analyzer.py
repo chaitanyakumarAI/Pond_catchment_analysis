@@ -237,7 +237,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
     is_river        = flow_acc >= river_threshold
     dist_to_river   = distance_transform_edt(~is_river) * ((cell_x + cell_y) / 2)
     max_dist        = float(dist_to_river.max())
-    buffer_m        = max(40.0, max_dist * 0.55)
+    buffer_m        = max(40.0, max_dist * 0.40)
 
     # ── 7. TWI — Topographic Wetness Index ─────────────────────────────────
     # TWI = ln(specific_catchment_area / tan(slope_rad))
@@ -267,7 +267,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
     dep_p30          = float(np.percentile(pos_dep, 30)) if len(pos_dep) > 0 else 0.1
     dep_threshold    = max(0.05, dep_p30)
 
-    valid_zone = (dist_to_river >= buffer_m) & (slope_deg < 8.0) & (depression_depth > dep_threshold)
+    valid_zone = (dist_to_river >= buffer_m) & (slope_deg >= 0.3) & (slope_deg < 8.0) & (depression_depth > dep_threshold)
 
     # PSI weights from Friend 1 (best validated formula):
     # 0.40·Flow  +  0.25·GaussSlope  +  0.20·TWI  +  0.15·LowElev
