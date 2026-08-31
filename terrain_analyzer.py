@@ -17,9 +17,8 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_candidate_ponds=4):
     """
-    Generalized Terrain & Hydrological Analysis Engine.
-    Detects MULTIPLE suitable pond sites & sub-catchments across the contour map.
-    Returns primary optimal catchment + list of all sub-catchment candidates.
+    Generalized Agricultural Terrain & Hydrological Analysis Engine.
+    Detects Farm Pond Sites & Catchments in Agricultural Fields (Excludes Active River Beds).
     """
     pts = parsed_kml_data['points']
     bbox = parsed_kml_data['bbox']
@@ -109,29 +108,33 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             nr, nc = downstream_target[(r, c)]
             flow_acc[nr, nc] += flow_acc[r, c]
 
-    # Normalize metrics for Pond Suitability Index (PSI)
+    # Normalize metrics
     min_z, max_z = np.min(dem), np.max(dem)
     z_range = max_z - min_z if max_z > min_z else 1.0
     norm_z = (dem - min_z) / z_range
 
-    max_fa = np.max(flow_acc)
-    norm_fa = flow_acc / (max_fa if max_fa > 0 else 1.0)
     max_slope = np.max(slope_deg)
     norm_slope = slope_deg / (max_slope if max_slope > 0 else 1.0)
 
-    # Pond Suitability Index Grid
-    # Favor high flow accumulation, low elevation, and gentle slope
-    psi = 0.50 * norm_fa + 0.35 * (1.0 - norm_z) + 0.15 * (1.0 - norm_slope)
+    # -------------------------------------------------------------
+    # AGRICULTURAL FARM POND SELECTION RULE:
+    # 1. Main River Channels (flow_acc > 140 cells) are excluded!
+    # 2. Optimal Farm Pond Tributary Catchments: 12 <= flow_acc <= 140
+    # -------------------------------------------------------------
+    max_tributary_fa = 140.0
+    is_farm_tributary = (flow_acc >= 12.0) & (flow_acc <= max_tributary_fa)
 
-    # River Channel Exclusion Filter:
-    # Major river trunks (top 3% highest flow accumulation) are active river beds.
-    # Farm ponds should be built on farm field tributaries/depressions, not inside the active river.
-    river_threshold = np.percentile(flow_acc, 97)
-    is_river = flow_acc >= river_threshold
-    psi[is_river] *= 0.3  # Penalize active river trunk channels
+    norm_fa = np.clip(flow_acc / max_tributary_fa, 0.0, 1.0)
 
-    # Zero out outer borders
-    border = 4
+    # Farm Pond Suitability Index (PSI) Grid
+    psi = np.where(
+        is_farm_tributary,
+        0.45 * norm_fa + 0.35 * (1.0 - norm_z) + 0.20 * (1.0 - norm_slope),
+        0.0
+    )
+
+    # Zero out outer map borders
+    border = 5
     psi[0:border, :] = 0
     psi[-border:, :] = 0
     psi[:, 0:border] = 0
@@ -142,17 +145,16 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
     for src, dst in downstream_target.items():
         upstream_map.setdefault(dst, []).append(src)
 
-    # Detect Local Maxima in PSI (Spatially separated candidate pond sites)
+    # Detect Local Maxima in PSI (Off-river farm pond sites)
     local_max = maximum_filter(psi, size=15)
-    is_local_max = (psi == local_max) & (psi > 0.20)
+    is_local_max = (psi == local_max) & (psi > 0.15)
 
     peak_coords = np.argwhere(is_local_max)
-    # Sort peaks by PSI score descending
     peak_coords = sorted(peak_coords, key=lambda rc: psi[rc[0], rc[1]], reverse=True)
 
     # Enforce minimum distance separation (at least 20 grid cells / ~400 meters)
     selected_peaks = []
-    min_dist_cells = 18
+    min_dist_cells = 20
 
     for r, c in peak_coords:
         is_far = True
@@ -167,7 +169,8 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             break
 
     if not selected_peaks:
-        best_idx = np.unravel_index(np.argmax(psi), psi.shape)
+        # Fallback if no tributary peaks found
+        best_idx = np.unravel_index(np.argmax(psi if np.max(psi) > 0 else norm_fa), psi.shape)
         selected_peaks = [(best_idx[0], best_idx[1])]
 
     # Color palette for candidate catchments
@@ -265,7 +268,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             },
             'properties': {
                 'rank': rank,
-                'name': f"Pond Site Candidate #{rank}",
+                'name': f"Farm Pond Site #{rank}",
                 'elevation_m': round(pond_elev, 2),
                 'suitability_score': suitability_pct,
                 'area_ha': round(catchment_area_ha, 2),
@@ -281,7 +284,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             },
             'properties': {
                 'rank': rank,
-                'name': f"Catchment Basin #{rank}",
+                'name': f"Farm Field Catchment #{rank}",
                 'area_ha': round(catchment_area_ha, 2),
                 'area_m2': round(catchment_area_m2, 2),
                 'color': color_hex
@@ -316,6 +319,6 @@ if __name__ == '__main__':
     from kml_parser import parse_kml_or_kmz
     data = parse_kml_or_kmz('contours_1m.kml')
     analysis = analyze_terrain_and_catchment(data)
-    print("Detected catchments count:", analysis['total_catchments_detected'])
+    print("Detected off-river farm pond count:", analysis['total_catchments_detected'])
     for c in analysis['all_candidate_sites']:
-        print(f"Rank {c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, Score: {c['pond_location']['suitability_score_pct']}%")
+        print(f"Farm Pond #{c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, Elev: {c['pond_location']['elevation_m']}m, Score: {c['pond_location']['suitability_score_pct']}%")
