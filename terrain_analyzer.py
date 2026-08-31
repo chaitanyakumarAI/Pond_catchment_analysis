@@ -1,7 +1,6 @@
 import numpy as np
 from scipy.interpolate import griddata
 from scipy.ndimage import gaussian_filter, distance_transform_edt, maximum_filter
-from scipy.spatial import ConvexHull
 import math
 
 def haversine_distance(lat1, lon1, lat2, lon2):
@@ -17,9 +16,8 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_candidate_ponds=4):
     """
-    High-Precision Agricultural Terrain & Hydrological Analysis Engine.
-    Employs Euclidean River Buffer Distance (Min 180m from River) + Terrain Curvature Bowl Filter.
-    Guarantees optimal farm pond placement in agricultural field depressions.
+    High-Precision Farmland & Village Pond Analysis Engine.
+    Filters out River Corridor (Min 250m buffer) and generates tight, accurate catchment shapes.
     """
     pts = parsed_kml_data['points']
     bbox = parsed_kml_data['bbox']
@@ -34,6 +32,13 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
         lons = lons[valid_mask]
         lats = lats[valid_mask]
         elevs = elevs[valid_mask]
+
+    # Downsample dense contour points for fast SciPy Delaunay triangulation
+    if len(lons) > 15000:
+        step = len(lons) // 15000
+        lons = lons[::step]
+        lats = lats[::step]
+        elevs = elevs[::step]
 
     # Calculate physical extent in meters
     width_m = haversine_distance(bbox['min_lat'], bbox['min_lon'], bbox['min_lat'], bbox['max_lon'])
@@ -116,31 +121,31 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             flow_acc[nr, nc] += flow_acc[r, c]
 
     # ------------------------------------------------------------------
-    # 1. RIVER BUFFER DISTANCE MASK (scipy distance transform)
-    # Identifies active main river trunks (flow_acc > 110) and calculates
-    # real ground distance in meters from the river for every cell.
+    # 1. STRICT RIVER CORRIDOR DISTANCE TRANSFORM
+    # Identifies river trunk channels (flow_acc > 70) and calculates
+    # ground distance in meters from the river for every cell.
     # ------------------------------------------------------------------
-    is_river_cell = flow_acc > 110.0
+    is_river_cell = flow_acc > 70.0
     dist_grid_cells = distance_transform_edt(~is_river_cell)
     dist_meters = dist_grid_cells * cell_size_avg
 
     # ------------------------------------------------------------------
-    # 2. AGRICULTURAL FIELD CATCHMENT FILTER:
-    # Must be at least 180m away from the river bank AND lie in a 
-    # field tributary catchment (10 <= flow_acc <= 90 cells).
+    # 2. FARMLAND & VILLAGE POND FILTER:
+    # Requires min 250m distance from River Corridor AND field catchment
+    # flow range (8 <= flow_acc <= 65 cells).
     # ------------------------------------------------------------------
-    valid_farm_land = (dist_meters >= 180.0) & (flow_acc >= 10.0) & (flow_acc <= 90.0)
+    valid_farmland_only = (dist_meters >= 250.0) & (flow_acc >= 8.0) & (flow_acc <= 65.0)
 
     min_z, max_z = np.min(dem), np.max(dem)
     z_range = max_z - min_z if max_z > min_z else 1.0
     norm_z = (dem - min_z) / z_range
-    norm_fa = np.clip(flow_acc / 90.0, 0.0, 1.0)
+    norm_fa = np.clip(flow_acc / 65.0, 0.0, 1.0)
     norm_curvature = np.clip(curvature * 100.0, 0.0, 1.0)
 
-    # High-Precision Farm Pond Suitability Index (PSI)
+    # High-Precision Farmland Pond Suitability Index (PSI)
     psi = np.where(
-        valid_farm_land,
-        0.40 * norm_fa + 0.40 * (1.0 - norm_z) + 0.20 * norm_curvature,
+        valid_farmland_only,
+        0.45 * norm_fa + 0.35 * (1.0 - norm_z) + 0.20 * norm_curvature,
         0.0
     )
 
@@ -156,16 +161,16 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
     for src, dst in downstream_target.items():
         upstream_map.setdefault(dst, []).append(src)
 
-    # Detect Local Maxima in PSI (Off-river farm pond sites in field bowls)
-    local_max = maximum_filter(psi, size=18)
-    is_local_max = (psi == local_max) & (psi > 0.10)
+    # Detect Local Maxima in PSI (100% Farmland & Village Pond Sinks)
+    local_max = maximum_filter(psi, size=16)
+    is_local_max = (psi == local_max) & (psi > 0.08)
 
     peak_coords = np.argwhere(is_local_max)
     peak_coords = sorted(peak_coords, key=lambda rc: psi[rc[0], rc[1]], reverse=True)
 
-    # Enforce minimum distance separation (at least 22 grid cells / ~450 meters between ponds)
+    # Enforce minimum distance separation (at least 20 grid cells / ~400 meters between ponds)
     selected_peaks = []
-    min_dist_cells = 22
+    min_dist_cells = 20
 
     for r, c in peak_coords:
         is_far = True
@@ -212,19 +217,36 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
         catchment_area_ha = catchment_area_m2 / 10000.0
         catchment_area_acres = catchment_area_m2 / 4046.86
 
-        # Catchment Boundary Polygon
-        catchment_pts = np.array([[grid_x[c], grid_y[r]] for r, c in catchment_cells])
-        boundary_coordinates = []
-        if len(catchment_pts) >= 4:
-            try:
-                hull = ConvexHull(catchment_pts)
-                boundary_pts = catchment_pts[hull.vertices]
-                boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in boundary_pts]
-                boundary_coordinates.append(boundary_coordinates[0])  # Close ring
-            except Exception:
-                boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in catchment_pts[:20]]
+        # -------------------------------------------------------------
+        # TIGHT PREIMETER BOUNDARY EXTRACTION (Accurate Polygon Shape)
+        # Finds perimeter cells and orders them radially from centroid
+        # -------------------------------------------------------------
+        catchment_mask = np.zeros((n_rows, n_cols), dtype=bool)
+        for cr, cc in catchment_cells:
+            catchment_mask[cr, cc] = True
+
+        boundary_cells = []
+        for cr, cc in catchment_cells:
+            is_edge = False
+            for dr in [-1, 0, 1]:
+                for dc in [-1, 0, 1]:
+                    nr, nc = cr + dr, cc + dc
+                    if not (0 <= nr < n_rows and 0 <= nc < n_cols) or not catchment_mask[nr, nc]:
+                        is_edge = True
+                        break
+                if is_edge:
+                    break
+            if is_edge:
+                boundary_cells.append((cr, cc))
+
+        if len(boundary_cells) >= 3:
+            center_r = np.mean([br for br, bc in boundary_cells])
+            center_c = np.mean([bc for br, bc in boundary_cells])
+            boundary_cells.sort(key=lambda item: math.atan2(item[0] - center_r, item[1] - center_c))
+            boundary_coordinates = [[float(grid_x[bc]), float(grid_y[br])] for br, bc in boundary_cells]
+            boundary_coordinates.append(boundary_coordinates[0])  # Close loop
         else:
-            boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in catchment_pts]
+            boundary_coordinates = [[float(grid_x[cc]), float(grid_y[cr])] for cr, cc in catchment_cells]
 
         # Hydrological Runoff & Sizing
         rainfall_m = 0.85
@@ -281,7 +303,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             },
             'properties': {
                 'rank': rank,
-                'name': f"Farm Pond Site #{rank}",
+                'name': f"Farmland / Village Pond Site #{rank}",
                 'elevation_m': round(pond_elev, 2),
                 'river_distance_m': river_dist,
                 'suitability_score': suitability_pct,
@@ -298,7 +320,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             },
             'properties': {
                 'rank': rank,
-                'name': f"Farm Field Catchment #{rank}",
+                'name': f"Farmland Catchment Basin #{rank}",
                 'area_ha': round(catchment_area_ha, 2),
                 'area_m2': round(catchment_area_m2, 2),
                 'color': color_hex
@@ -333,6 +355,6 @@ if __name__ == '__main__':
     from kml_parser import parse_kml_or_kmz
     data = parse_kml_or_kmz('contours_1m.kml')
     analysis = analyze_terrain_and_catchment(data)
-    print("Detected precise off-river farm pond count:", analysis['total_catchments_detected'])
+    print("Detected farmland & village pond count:", analysis['total_catchments_detected'])
     for c in analysis['all_candidate_sites']:
-        print(f"Farm Pond #{c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, River Dist: {c['pond_location']['river_buffer_distance_m']}m, Score: {c['pond_location']['suitability_score_pct']}%")
+        print(f"Site #{c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, River Dist: {c['pond_location']['river_buffer_distance_m']}m, Score: {c['pond_location']['suitability_score_pct']}%")
