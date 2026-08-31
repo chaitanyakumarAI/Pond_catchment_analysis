@@ -120,7 +120,15 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
     norm_slope = slope_deg / (max_slope if max_slope > 0 else 1.0)
 
     # Pond Suitability Index Grid
+    # Favor high flow accumulation, low elevation, and gentle slope
     psi = 0.50 * norm_fa + 0.35 * (1.0 - norm_z) + 0.15 * (1.0 - norm_slope)
+
+    # River Channel Exclusion Filter:
+    # Major river trunks (top 3% highest flow accumulation) are active river beds.
+    # Farm ponds should be built on farm field tributaries/depressions, not inside the active river.
+    river_threshold = np.percentile(flow_acc, 97)
+    is_river = flow_acc >= river_threshold
+    psi[is_river] *= 0.3  # Penalize active river trunk channels
 
     # Zero out outer borders
     border = 4

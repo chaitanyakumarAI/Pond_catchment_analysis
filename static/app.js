@@ -2,11 +2,33 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize Leaflet Map
   const map = L.map('map').setView([21.25, 81.29], 13);
 
-  // Add free OpenStreetMap tiles (no API key required)
-  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+  // Base Map Tile Layers (Lightweight CDN Tiles)
+  const streetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19
-  }).addTo(map);
+  });
+
+  const terrainMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenTopoMap (CC-BY-SA)',
+    maxZoom: 17
+  });
+
+  const satelliteMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    maxZoom: 18
+  });
+
+  // Default to Street Map
+  streetMap.addTo(map);
+
+  // Add Layer Control widget (Street, Terrain Topo, Satellite)
+  const baseMaps = {
+    "🗺️ Standard Street": streetMap,
+    "🏔️ Terrain Topo": terrainMap,
+    "🛰️ Satellite View": satelliteMap
+  };
+
+  L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
 
   let layerGroup = L.layerGroup().addTo(map);
   let globalAnalysisData = null;
