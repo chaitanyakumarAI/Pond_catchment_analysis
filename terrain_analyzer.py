@@ -231,12 +231,13 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         R2,C2=r+int(fdr[r,c]),c+int(fdc[r,c])
         if 0<=R2<nr2 and 0<=C2<nc2: umap.setdefault((R2,C2),[]).append((r,c))
 
-    # River Corridor Identification: top 1.5% FA cells (river network)
-    river_thresh = np.percentile(fa, 98.5)
-    is_river = fa >= river_thresh
+    # River Corridor Identification: top 5% FA OR lowest 18% elevation flat valley trough
+    river_thresh = np.percentile(fa, 95)
+    elev_river_thresh = np.percentile(dem_raw, 18)
+    is_river = (fa >= river_thresh) | ((dem_raw <= elev_river_thresh) & (slope < 3.0))
     dist_r = distance_transform_edt(~is_river) * ((cx + cy) / 2)
-    # Enforce minimum 100m river buffer to prevent ponds on river banks
-    buf = max(100.0, dist_r.max() * 0.25)
+    # Enforce minimum 120m river buffer
+    buf = max(120.0, dist_r.max() * 0.25)
 
     # TWI
     sr=np.radians(np.clip(slope,0.1,89)); spa=np.maximum(fa*cx,1.0)
@@ -263,7 +264,8 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         t=set(); stk=[(int(r),int(c))]
         while stk and len(t)<mc*3:
             cell=stk.pop()
-            if cell not in t: t.add(cell); stk.extend(umap.get(cell,[]))
+            if cell not in t and not is_river[cell[0],cell[1]]:
+                t.add(cell); stk.extend(umap.get(cell,[]))
         if len(t)<mc: continue
         if all((r-pr)**2+(c-pc)**2>=sep**2 for pr,pc in sel): sel.append((r,c))
         if len(sel)>=max_candidate_ponds: break
@@ -277,7 +279,8 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         cat=set(); stk=[(int(pr),int(pc))]
         while stk:
             cell=stk.pop()
-            if cell not in cat: cat.add(cell); stk.extend(umap.get(cell,[]))
+            if cell not in cat and not is_river[cell[0],cell[1]]:
+                cat.add(cell); stk.extend(umap.get(cell,[]))
         am2=len(cat)*ca; aha=am2/10000; aac=am2/4046.86
         bnd=_shapely_poly(cat,gx,gy,cx,cy,t2w)
         rf=0.85; rc2=0.35; rm3=am2*rf*rc2
