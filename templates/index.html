@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pond Catchment Analysis & Terrain Engine</title>
+  <title>AquaTerrain AI - Multi-Catchment & Pond Analysis</title>
   
   <!-- Google Fonts & Leaflet CSS -->
   <link rel="preconnect" href="https://fonts.googleapis.com">
@@ -26,14 +26,14 @@
         </div>
         <div>
           <h2>AquaTerrain AI</h2>
-          <p>Pond Catchment Analysis System</p>
+          <p>Multi-Catchment Pond Engine</p>
         </div>
       </div>
 
       <!-- File Upload Card -->
       <div class="card upload-card">
         <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Contour Map</h3>
-        <p class="subtitle">Upload a KML or KMZ contour map to identify optimal pond locations & estimate catchment areas.</p>
+        <p class="subtitle">Upload KML/KMZ to discover candidate pond locations & estimate multi-basin catchments.</p>
         
         <form id="uploadForm" enctype="multipart/form-data">
           <div class="drop-zone" id="dropZone">
@@ -45,7 +45,7 @@
           <div class="file-name-display" id="fileNameDisplay"></div>
           
           <button type="submit" class="btn btn-primary" id="btnAnalyze" disabled>
-            <i class="fa-solid fa-microchip"></i> Analyze Terrain & Catchment
+            <i class="fa-solid fa-microchip"></i> Analyze Multi-Catchments
           </button>
         </form>
 
@@ -59,8 +59,16 @@
       <!-- Analysis Results Dashboard -->
       <div class="results-container" id="resultsContainer" style="display: none;">
         
+        <!-- Candidate Catchment Tabs -->
+        <div class="card tabs-card">
+          <h3><i class="fa-solid fa-layer-group"></i> Detected Sub-Catchments</h3>
+          <div class="candidate-tabs" id="candidateTabs">
+            <!-- Dynamic Buttons for Site #1, Site #2, etc. -->
+          </div>
+        </div>
+
         <div class="card metrics-card">
-          <h3><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
+          <h3 id="selectedSiteTitle"><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
           <div class="metrics-grid">
             <div class="metric-item highlight">
               <span class="metric-label">Catchment Area</span>
@@ -117,14 +125,14 @@
       <!-- Loading Overlay -->
       <div class="loader-overlay" id="loaderOverlay" style="display: none;">
         <div class="spinner"></div>
-        <h4>Analyzing Contour Terrain & Delineating Catchment...</h4>
-        <p>Interpolating DEM grid • Computing D8 Flow Directions • Calculating Water Yield</p>
+        <h4>Analyzing Contour Terrain & Delineating Multi-Catchments...</h4>
+        <p>Interpolating DEM grid • Computing D8 Flow Directions • Detecting Candidate Basins</p>
       </div>
 
       <!-- Map Floating Header -->
       <div class="map-header-badge">
         <span class="badge-dot"></span>
-        <span id="mapStatusText">Upload a contour map to begin terrain analysis</span>
+        <span id="mapStatusText">Upload a contour map to discover pond locations & catchments</span>
       </div>
     </main>
   </div>

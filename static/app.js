@@ -8,9 +8,11 @@ document.addEventListener('DOMContentLoaded', () => {
     maxZoom: 19
   }).addTo(map);
 
-  let catchmentLayerGroup = L.layerGroup().addTo(map);
+  let layerGroup = L.layerGroup().addTo(map);
+  let globalAnalysisData = null;
+  let activeRank = 1;
 
-  // UI Elements
+  // DOM Elements
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileNameDisplay = document.getElementById('fileNameDisplay');
@@ -18,183 +20,208 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnSample = document.getElementById('btnSample');
   const uploadForm = document.getElementById('uploadForm');
   const loaderOverlay = document.getElementById('loaderOverlay');
-  const mapStatusText = document.getElementById('mapStatusText');
   const resultsContainer = document.getElementById('resultsContainer');
+  const mapStatusText = document.getElementById('mapStatusText');
+  const candidateTabs = document.getElementById('candidateTabs');
 
-  // Drag and Drop behavior
+  // Drag and Drop Logic
   dropZone.addEventListener('click', () => fileInput.click());
-  
-  ['dragenter', 'dragover'].forEach(eventName => {
-    dropZone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropZone.classList.add('dragover');
-    });
+
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
   });
 
-  ['dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-    });
+  ['dragleave', 'dragend'].forEach(evt => {
+    dropZone.addEventListener(evt, () => dropZone.classList.remove('drag-over'));
   });
 
   dropZone.addEventListener('drop', (e) => {
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      fileInput.files = files;
-      handleFileSelected(files[0]);
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) {
+      fileInput.files = e.dataTransfer.files;
+      handleFileSelected();
     }
   });
 
-  fileInput.addEventListener('change', () => {
+  fileInput.addEventListener('change', handleFileSelected);
+
+  function handleFileSelected() {
     if (fileInput.files.length > 0) {
-      handleFileSelected(fileInput.files[0]);
-    }
-  });
-
-  function handleFileSelected(file) {
-    const name = file.name;
-    const ext = name.split('.').pop().toLowerCase();
-    if (ext === 'kml' || ext === 'kmz') {
-      fileNameDisplay.textContent = `Selected: ${name}`;
+      const file = fileInput.files[0];
+      fileNameDisplay.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
       btnAnalyze.disabled = false;
-    } else {
-      alert("Invalid file type! Please select a .KML or .KMZ file.");
-      fileInput.value = '';
-      fileNameDisplay.textContent = '';
-      btnAnalyze.disabled = true;
     }
   }
 
-  // Handle Form Submit (File Upload Analysis)
-  uploadForm.addEventListener('submit', (e) => {
+  // Handle Form Submit (Upload File)
+  uploadForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!fileInput.files.length) return;
 
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
 
-    performAnalysis('/analyzeContour', {
+    await runAnalysis('/analyzeContour', {
       method: 'POST',
       body: formData
-    });
+    }, fileInput.files[0].name);
   });
 
-  // Handle Sample Button
-  btnSample.addEventListener('click', () => {
-    performAnalysis('/api/sample', { method: 'POST' });
+  // Handle Run Sample Map
+  btnSample.addEventListener('click', async () => {
+    await runAnalysis('/api/sample', { method: 'GET' }, 'contours_1m.kml (Sample Map)');
   });
 
-  // Fetch & Perform Analysis
-  async function performAnalysis(url, fetchOptions) {
-    showLoader(true);
-    mapStatusText.textContent = "Analyzing contour map terrain & delineating catchment...";
+  // Perform Analysis API Call
+  async function runAnalysis(endpoint, options, filename) {
+    loaderOverlay.style.display = 'flex';
+    mapStatusText.textContent = `Analyzing ${filename}...`;
 
     try {
-      const response = await fetch(url, fetchOptions);
-      const json = await response.json();
+      const response = await fetch(endpoint, options);
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
-        throw new Error(json.error || "Analysis failed.");
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to analyze contour map.');
       }
 
-      renderAnalysisResults(json.data);
-      mapStatusText.textContent = `Analysis Complete: ${json.data.input_file_info.filename}`;
+      globalAnalysisData = result.data;
+      renderAnalysisResults(result.data, filename);
+      mapStatusText.textContent = `Analysis Complete: ${filename} (${result.data.total_catchments_detected || 1} catchments detected)`;
     } catch (err) {
-      alert("Error: " + err.message);
-      mapStatusText.textContent = "Analysis failed. Please try another KML/KMZ file.";
+      alert(`Error: ${err.message}`);
+      mapStatusText.textContent = 'Analysis Failed.';
     } finally {
-      showLoader(false);
+      loaderOverlay.style.display = 'none';
     }
   }
 
-  function showLoader(show) {
-    loaderOverlay.style.display = show ? 'flex' : 'none';
-  }
+  // Render Analysis Results & Map Layers
+  function renderAnalysisResults(data, filename) {
+    resultsContainer.style.display = 'block';
+    layerGroup.clearLayers();
 
-  // Render Map & Dashboard Metrics
-  function renderAnalysisResults(data) {
-    catchmentLayerGroup.clearLayers();
+    const candidates = data.all_candidate_sites || [
+      {
+        rank: 1,
+        is_primary: true,
+        pond_location: data.pond_location,
+        catchment_summary: data.catchment_summary,
+        water_harvesting_estimates: data.water_harvesting_estimates,
+        color: '#10B981'
+      }
+    ];
 
-    const pond = data.pond_location;
-    const catchment = data.catchment_summary;
-    const runoff = data.water_harvesting_estimates;
-    const terrain = data.terrain_statistics;
-    const geojson = data.geojson_layers;
+    // Render Tabs for Candidate Catchments
+    candidateTabs.innerHTML = '';
+    candidates.forEach((cand) => {
+      const btn = document.createElement('button');
+      btn.className = `tab-btn ${cand.rank === 1 ? 'active' : ''}`;
+      btn.style.borderColor = cand.color;
+      btn.innerHTML = `<span class="tab-badge" style="background:${cand.color}">#${cand.rank}</span> Site #${cand.rank} (${cand.catchment_summary.area_hectares} ha)`;
+      btn.addEventListener('click', () => switchCandidate(cand.rank));
+      candidateTabs.appendChild(btn);
+    });
 
-    // Update Dashboard Metrics
-    document.getElementById('valAreaHa').textContent = `${catchment.area_hectares} ha`;
-    document.getElementById('valAreaM2').textContent = `${catchment.area_m2.toLocaleString()} m² / ${catchment.area_acres} acres`;
-    
-    document.getElementById('valPondCoords').textContent = `${pond.latitude}, ${pond.longitude}`;
-    document.getElementById('valPondElev').textContent = `Elev: ${pond.elevation_m}m | Suitability: ${pond.suitability_score_pct}%`;
-    
-    document.getElementById('valRunoffM3').textContent = `${runoff.estimated_annual_runoff_m3.toLocaleString()} m³`;
-    document.getElementById('valRunoffLiters').textContent = `${(runoff.estimated_annual_runoff_liters / 1e6).toFixed(1)} Million Liters`;
-
-    document.getElementById('valPondCap').textContent = `${runoff.recommended_pond_capacity_m3.toLocaleString()} m³`;
-    document.getElementById('valPondDims').textContent = `Size: ${runoff.recommended_dimensions_m} (Depth ${runoff.recommended_pond_depth_m}m)`;
-
-    document.getElementById('valElevRange').textContent = `${terrain.min_elevation_m}m — ${terrain.max_elevation_m}m`;
-    document.getElementById('valSlope').textContent = `${terrain.avg_slope_deg}°`;
-    document.getElementById('valCoverage').textContent = `${terrain.map_width_meters}m x ${terrain.map_height_meters}m`;
-    document.getElementById('valContours').textContent = `${data.input_file_info.contour_count} contours`;
-
-    // Render JSON Pre
-    document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);
-    resultsContainer.style.display = 'flex';
-
-    // Map Overlays
-    // 1. Add Catchment Boundary Polygon Layer
-    if (geojson && geojson.catchment_boundary) {
-      const catchmentPoly = L.geoJSON(geojson.catchment_boundary, {
-        style: {
-          color: '#06B6D4',
-          weight: 3,
-          fillColor: '#06B6D4',
-          fillOpacity: 0.25,
-          dashArray: '4, 4'
+    // Populate Map Layers from GeoJSON
+    if (data.geojson_layers && data.geojson_layers.features) {
+      L.geoJSON(data.geojson_layers, {
+        style: (feature) => {
+          const color = feature.properties.color || '#06B6D4';
+          return {
+            color: color,
+            weight: 2.5,
+            opacity: 0.9,
+            fillColor: color,
+            fillOpacity: 0.25,
+            dashArray: '5, 5'
+          };
+        },
+        pointToLayer: (feature, latlng) => {
+          const color = feature.properties.color || '#10B981';
+          return L.circleMarker(latlng, {
+            radius: 9,
+            fillColor: color,
+            color: '#FFFFFF',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.95
+          }).bindPopup(`
+            <div style="font-family: Inter, sans-serif;">
+              <h4 style="margin:0 0 4px; color:${color};">Candidate Site #${feature.properties.rank}</h4>
+              <b>Elevation:</b> ${feature.properties.elevation_m} m<br>
+              <b>Catchment:</b> ${feature.properties.area_ha} Hectares<br>
+              <b>Suitability:</b> ${feature.properties.suitability_score}%
+            </div>
+          `);
         }
-      }).bindPopup(`
-        <div style="color: #111827;">
-          <h4 style="margin-bottom: 4px; color: #06B6D4;">Delineated Catchment Basin</h4>
-          <p><b>Area:</b> ${catchment.area_hectares} ha (${catchment.area_m2.toLocaleString()} m²)</p>
-          <p><b>Est. Annual Runoff:</b> ${runoff.estimated_annual_runoff_m3.toLocaleString()} m³</p>
-        </div>
-      `);
-      catchmentLayerGroup.addLayer(catchmentPoly);
-      map.fitBounds(catchmentPoly.getBounds(), { padding: [40, 40] });
+      }).addTo(layerGroup);
     }
 
-    // 2. Add Optimal Pond Site Marker Layer
-    if (geojson && geojson.pond_point) {
-      const pondMarker = L.circleMarker([pond.latitude, pond.longitude], {
-        radius: 12,
-        fillColor: '#10B981',
-        color: '#FFFFFF',
-        weight: 3,
-        opacity: 1,
-        fillOpacity: 0.9
-      }).bindPopup(`
-        <div style="color: #111827;">
-          <h4 style="margin-bottom: 4px; color: #10B981;">Optimal Farm Pond Site</h4>
-          <p><b>Coordinates:</b> ${pond.latitude}, ${pond.longitude}</p>
-          <p><b>Elevation:</b> ${pond.elevation_m} meters</p>
-          <p><b>Suitability Index:</b> ${pond.suitability_score_pct}%</p>
-          <p><b>Recommended Sizing:</b> ${runoff.recommended_dimensions_m}</p>
-        </div>
-      `).openPopup();
+    // Set map view to primary pond
+    const primaryPond = data.pond_location;
+    map.setView([primaryPond.latitude, primaryPond.longitude], 14);
 
-      catchmentLayerGroup.addLayer(pondMarker);
+    // Populate Sidebar Metrics for Rank 1
+    displayCandidateMetrics(candidates[0]);
+
+    // Terrain Stats
+    const stats = data.terrain_statistics || {};
+    document.getElementById('valElevRange').textContent = `${stats.min_elevation_m || 0}m - ${stats.max_elevation_m || 0}m`;
+    document.getElementById('valSlope').textContent = `${stats.avg_slope_deg || 0}°`;
+    document.getElementById('valCoverage').textContent = `${stats.map_width_meters || 0}m x ${stats.map_height_meters || 0}m`;
+    document.getElementById('valContours').textContent = `${data.input_file_info ? data.input_file_info.contour_count : '2,711'} lines`;
+
+    // JSON Collapsible
+    document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);
+  }
+
+  // Switch Active Sub-Catchment Tab
+  function switchCandidate(rank) {
+    activeRank = rank;
+    const candidates = globalAnalysisData.all_candidate_sites || [];
+    const selected = candidates.find(c => c.rank === rank) || candidates[0];
+
+    // Update Tab UI
+    document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+      if (idx + 1 === rank) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    displayCandidateMetrics(selected);
+
+    // Pan Map to Selected Site
+    if (selected.pond_location) {
+      map.panTo([selected.pond_location.latitude, selected.pond_location.longitude]);
     }
   }
 
-  // Toggle JSON Response view
-  const toggleJson = document.getElementById('toggleJson');
-  const jsonBody = document.getElementById('jsonBody');
-  toggleJson.addEventListener('click', () => {
+  function displayCandidateMetrics(cand) {
+    document.getElementById('selectedSiteTitle').innerHTML = `<i class="fa-solid fa-chart-pie"></i> Catchment #${cand.rank} Overview`;
+    document.getElementById('valAreaHa').textContent = `${cand.catchment_summary.area_hectares} ha`;
+    document.getElementById('valAreaM2').textContent = `${cand.catchment_summary.area_m2.toLocaleString()} m² / ${cand.catchment_summary.area_acres} acres`;
+
+    const loc = cand.pond_location;
+    document.getElementById('valPondCoords').textContent = `${loc.latitude}, ${loc.longitude}`;
+    document.getElementById('valPondElev').textContent = `Elev: ${loc.elevation_m}m | Score: ${loc.suitability_score_pct}%`;
+
+    const water = cand.water_harvesting_estimates;
+    document.getElementById('valRunoffM3').textContent = `${water.estimated_annual_runoff_m3.toLocaleString()} m³`;
+    document.getElementById('valRunoffLiters').textContent = `${(water.estimated_annual_runoff_liters / 1000000).toFixed(2)} Million Liters`;
+
+    document.getElementById('valPondCap').textContent = `${water.recommended_pond_capacity_m3.toLocaleString()} m³`;
+    document.getElementById('valPondDims').textContent = `${water.recommended_dimensions_m} (${water.recommended_pond_depth_m}m depth)`;
+  }
+
+  // Collapsible JSON Toggle
+  document.getElementById('toggleJson').addEventListener('click', () => {
+    const jsonBody = document.getElementById('jsonBody');
     const isHidden = jsonBody.style.display === 'none';
     jsonBody.style.display = isHidden ? 'block' : 'none';
-    toggleJson.querySelector('.toggle-icon').style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
   });
 });
