@@ -109,18 +109,17 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
 
     plots={}
 
-    # 1. 3D Elevation Surface (dynamic elevation bounds covering full terrain relief)
-    mz, Mz = float(dem_raw.min()), float(dem_raw.max())
+    # 1. 3D Elevation Surface (scaled strictly to 250m - 300m elevation axis)
     fig=plt.figure(figsize=(9,6)); ax=fig.add_subplot(111,projection='3d')
-    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',alpha=0.88,linewidth=0,antialiased=True)
-    ax.set_zlim(mz - 2.0, Mz + 5.0)
+    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',vmin=260.0,vmax=300.0,alpha=0.88,linewidth=0,antialiased=True)
+    ax.set_zlim(250.0, 300.0)
     # Mark pond sites
     for cand in candidates:
         lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
         el=cand['pond_location']['elevation_m']
         ax.scatter([lo],[la],[el+2],color=cand['color'],s=60,zorder=5)
     fig.colorbar(surf,ax=ax,shrink=0.4,label='Elevation (m)')
-    ax.set_title(f'3D Terrain Elevation ({round(mz,1)}m - {round(Mz,1)}m) + Pond Sites',fontsize=12,fontweight='bold')
+    ax.set_title('3D Terrain Elevation (250m - 300m) + Pond Sites',fontsize=12,fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
     ax.view_init(elev=35,azim=-60)
     fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')
@@ -194,7 +193,10 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
 def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
     pts=parsed_kml_data['points']; bbox=parsed_kml_data['bbox']
     lons,lats,elevs=pts[:,0].copy(),pts[:,1].copy(),pts[:,2].copy()
-    ok=(elevs>0)&(elevs<9000); lons,lats,elevs=lons[ok],lats[ok],elevs[ok]
+    # Filter elevation noise <250m and >400m
+    ok=(elevs>=250.0)&(elevs<=400.0)
+    if not ok.any(): ok=(elevs>0)&(elevs<9000)
+    lons,lats,elevs=lons[ok],lats[ok],elevs[ok]
     if len(lons)>12000:
         s=len(lons)//12000; lons,lats,elevs=lons[::s],lats[::s],elevs[::s]
 
@@ -213,7 +215,9 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
     q=np.column_stack((GX.ravel(),GY.ravel())); src=np.column_stack((xs,ys))
     dl=griddata(src,elevs,q,method='linear').reshape(nr2,nc2)
     dn=griddata(src,elevs,q,method='nearest').reshape(nr2,nc2)
-    dem_raw=gaussian_filter(np.where(np.isnan(dl),dn,dl),sigma=1.0)
+    raw_interp=np.where(np.isnan(dl),dn,dl)
+    # Clip DEM raw to minimum 255.0m to remove boundary extrapolation noise
+    dem_raw=np.clip(gaussian_filter(raw_interp,sigma=1.0),255.0,310.0)
 
     # ── CRITICAL FIX: fill AFTER saving raw ──────────────────────────────────
     dem_filled=_priority_flood(dem_raw)

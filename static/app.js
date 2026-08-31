@@ -261,30 +261,30 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Terrain Plots Modal ─────────────────────────────────────────────────
-  const plotsModal   = document.getElementById('plotsModal');
+  const plotsModal = document.getElementById('plotsModal');
   const plotsLoading = document.getElementById('plotsLoading');
-  const plotsGrid    = document.getElementById('plotsGrid');
-  const btnTerrain   = document.getElementById('btnTerrainPlots');
-  const closePlots   = document.getElementById('closePlots');
+  const plotsGrid = document.getElementById('plotsGrid');
+  const btnTerrain = document.getElementById('btnTerrainPlots');
+  const closePlots = document.getElementById('closePlots');
 
   const PLOT_LABELS = {
-    '3d_elevation':     { title: '3D Terrain Elevation Surface', icon: 'fa-mountain' },
-    'dem_heatmap':      { title: 'DEM Heatmap + Candidate Sites', icon: 'fa-map' },
-    'slope_map':        { title: 'Slope Map (Horn\'s 8-Neighbour)', icon: 'fa-angles-up' },
-    'flow_accumulation':{ title: 'D8 Flow Accumulation (log scale)', icon: 'fa-water' },
-    'twi_map':          { title: 'Topographic Wetness Index (TWI)', icon: 'fa-droplet' },
-    'depression_map':   { title: 'Terrain Depression Depth (Sinks)', icon: 'fa-arrow-trend-down' },
+    '3d_elevation': { title: '3D Terrain Elevation Surface', icon: 'fa-mountain' },
+    'dem_heatmap': { title: 'DEM Heatmap + Candidate Sites', icon: 'fa-map' },
+    'slope_map': { title: 'Slope Map (Horn\'s 8-Neighbour)', icon: 'fa-angles-up' },
+    'flow_accumulation': { title: 'D8 Flow Accumulation (log scale)', icon: 'fa-water' },
+    'twi_map': { title: 'Topographic Wetness Index (TWI)', icon: 'fa-droplet' },
+    'depression_map': { title: 'Terrain Depression Depth (Sinks)', icon: 'fa-arrow-trend-down' },
   };
 
   if (btnTerrain) {
     btnTerrain.addEventListener('click', async () => {
       plotsModal.style.display = 'block';
       plotsLoading.style.display = 'block';
-      plotsGrid.style.display   = 'none';
-      plotsGrid.innerHTML       = '';
+      plotsGrid.style.display = 'none';
+      plotsGrid.innerHTML = '';
 
       try {
-        const res  = await fetch('/api/plots');
+        const res = await fetch('/api/plots');
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Plot generation failed');
 
@@ -305,7 +305,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         plotsGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;';
         plotsLoading.style.display = 'none';
-        plotsGrid.style.display    = 'grid';
+        plotsGrid.style.display = 'grid';
       } catch (err) {
         plotsLoading.innerHTML = `<p style="color:#ef4444;"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</p>`;
       }
@@ -332,11 +332,11 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   // ── Interactive 3D WebGL Terrain Renderer (Plotly.js) ───────────────────
-  const modal3D        = document.getElementById('modal3D');
-  const btn3DTerrain   = document.getElementById('btn3DTerrain');
-  const close3D        = document.getElementById('close3D');
-  const btnReset3D     = document.getElementById('btnReset3D');
-  const plotly3DLoading= document.getElementById('plotly3DLoading');
+  const modal3D = document.getElementById('modal3D');
+  const btn3DTerrain = document.getElementById('btn3DTerrain');
+  const close3D = document.getElementById('close3D');
+  const btnReset3D = document.getElementById('btnReset3D');
+  const plotly3DLoading = document.getElementById('plotly3DLoading');
   let plotly3DData = null;
 
   if (btn3DTerrain) {
@@ -345,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
       plotly3DLoading.style.display = 'flex';
 
       try {
-        const res  = await fetch('/api/terrain_3d_mesh');
+        const res = await fetch('/api/terrain_3d_mesh');
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Failed to fetch 3D mesh');
 
@@ -364,9 +364,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const minElev = data.min_elev || 180;
-    const maxElev = data.max_elev || 300;
-    const zRange  = data.z_range || [minElev - 2, maxElev + 5];
+    const minElev = 260;
+    const maxElev = 300;
+    const zRange  = [250, 300];
 
     // Vibrant topographical colormap:
     // River channel (deep blue) -> Water edge (cyan) -> Farmland basin (emerald) -> Slopes (gold) -> Peaks (mountain brown)
@@ -439,10 +439,10 @@ document.addEventListener('DOMContentLoaded', () => {
       scene: {
         xaxis: { title: 'Longitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
         yaxis: { title: 'Latitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
-        zaxis: { 
-          title: 'Elevation (m)', 
-          titlefont: { color: '#10B981' }, 
-          tickfont: { color: '#64748b' }, 
+        zaxis: {
+          title: 'Elevation (m)',
+          titlefont: { color: '#10B981' },
+          tickfont: { color: '#64748b' },
           gridcolor: '#1e293b',
           range: zRange
         },
