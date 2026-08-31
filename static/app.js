@@ -364,28 +364,52 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
+    const minElev = data.min_elev || 180;
+    const maxElev = data.max_elev || 300;
+    const zRange  = data.z_range || [minElev - 2, maxElev + 5];
+
+    // Vibrant topographical colormap:
+    // River channel (deep blue) -> Water edge (cyan) -> Farmland basin (emerald) -> Slopes (gold) -> Peaks (mountain brown)
+    const customTerrainColorscale = [
+      [0.00, '#0f172a'],
+      [0.15, '#1e3a8a'],
+      [0.30, '#0284c7'],
+      [0.48, '#10b981'],
+      [0.68, '#eab308'],
+      [0.85, '#d97706'],
+      [1.00, '#78350f']
+    ];
+
     const surfaceTrace = {
       type: 'surface',
       x: data.x,
       y: data.y,
       z: data.z,
-      colorscale: 'Earth',
-      reversescale: false,
+      cmin: minElev,
+      cmax: maxElev,
+      colorscale: customTerrainColorscale,
       contours: {
-        z: { show: true, usecolormap: true, highlightcolor: '#4299e1', project: { z: true } }
+        z: { show: true, usecolormap: true, highlightcolor: '#38bdf8', project: { z: true } }
       },
       colorbar: {
-        title: { text: 'Elevation (m)', side: 'right' },
-        thickness: 15,
-        len: 0.7,
-        tickfont: { color: '#94a3b8' },
-        titlefont: { color: '#10B981' }
+        title: { text: `Elevation (m)<br><span style="font-size:11px;color:#94a3b8;">${minElev}m – ${maxElev}m</span>`, side: 'right' },
+        thickness: 18,
+        len: 0.85,
+        tickfont: { color: '#cbd5e1', size: 11 },
+        titlefont: { color: '#10B981', size: 13 }
+      },
+      lighting: {
+        ambient: 0.65,
+        diffuse: 0.8,
+        fresnel: 0.2,
+        specular: 0.5,
+        roughness: 0.4
       }
     };
 
     const candX = data.candidates.map(c => c.longitude);
     const candY = data.candidates.map(c => c.latitude);
-    const candZ = data.candidates.map(c => c.elevation_m + 1.5);
+    const candZ = data.candidates.map(c => c.elevation_m + 2.0);
     const candText = data.candidates.map(c => `${c.label}<br>Elev: ${c.elevation_m}m`);
     const candColors = data.candidates.map(c => c.color);
 
@@ -397,11 +421,11 @@ document.addEventListener('DOMContentLoaded', () => {
       z: candZ,
       text: data.candidates.map(c => `Site #${c.rank}`),
       textposition: 'top center',
-      textfont: { color: '#ffffff', size: 12, family: 'Inter' },
+      textfont: { color: '#ffffff', size: 13, family: 'Inter', weight: 'bold' },
       hoverinfo: 'text',
       hovertext: candText,
       marker: {
-        size: 9,
+        size: 10,
         color: candColors,
         symbol: 'diamond',
         line: { color: '#ffffff', width: 2 }
@@ -420,7 +444,7 @@ document.addEventListener('DOMContentLoaded', () => {
           titlefont: { color: '#10B981' }, 
           tickfont: { color: '#64748b' }, 
           gridcolor: '#1e293b',
-          range: [250, 300]
+          range: zRange
         },
         camera: {
           eye: { x: 1.55, y: -1.55, z: 0.95 }

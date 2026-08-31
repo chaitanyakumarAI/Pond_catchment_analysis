@@ -109,17 +109,18 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
 
     plots={}
 
-    # 1. 3D Elevation Surface (z-axis strictly set to 250m - 300m as requested)
+    # 1. 3D Elevation Surface (dynamic elevation bounds covering full terrain relief)
+    mz, Mz = float(dem_raw.min()), float(dem_raw.max())
     fig=plt.figure(figsize=(9,6)); ax=fig.add_subplot(111,projection='3d')
-    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',alpha=0.85,linewidth=0,antialiased=True)
-    ax.set_zlim(250, 300)
+    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',alpha=0.88,linewidth=0,antialiased=True)
+    ax.set_zlim(mz - 2.0, Mz + 5.0)
     # Mark pond sites
     for cand in candidates:
         lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
         el=cand['pond_location']['elevation_m']
         ax.scatter([lo],[la],[el+2],color=cand['color'],s=60,zorder=5)
     fig.colorbar(surf,ax=ax,shrink=0.4,label='Elevation (m)')
-    ax.set_title('3D Terrain Elevation (250m - 300m) + Pond Sites',fontsize=12,fontweight='bold')
+    ax.set_title(f'3D Terrain Elevation ({round(mz,1)}m - {round(Mz,1)}m) + Pond Sites',fontsize=12,fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
     ax.view_init(elev=35,azim=-60)
     fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')

@@ -174,13 +174,18 @@ def get_terrain_3d_mesh():
                 'label': f"Site #{c['rank']} ({c['catchment_summary']['area_hectares']} ha)"
             })
 
+        mz = round(float(dem_raw.min()), 1)
+        Mz = round(float(dem_raw.max()), 1)
+
         return jsonify({
             'success': True,
             'x': x_vals,
             'y': y_vals,
             'z': z_vals,
             'candidates': cands,
-            'z_range': [250, 300]
+            'min_elev': mz,
+            'max_elev': Mz,
+            'z_range': [max(0.0, mz - 2.0), Mz + 5.0]
         }), 200
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
