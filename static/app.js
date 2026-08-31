@@ -230,7 +230,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const loc = cand.pond_location;
     document.getElementById('valPondCoords').textContent = `${loc.latitude}, ${loc.longitude}`;
-    document.getElementById('valPondElev').textContent = `Elev: ${loc.elevation_m}m | Score: ${loc.suitability_score_pct}%`;
+    const riverDistStr = loc.river_buffer_distance_m ? ` | River Dist: ${loc.river_buffer_distance_m}m` : '';
+    document.getElementById('valPondElev').textContent = `Elev: ${loc.elevation_m}m${riverDistStr}`;
 
     const water = cand.water_harvesting_estimates;
     document.getElementById('valRunoffM3').textContent = `${water.estimated_annual_runoff_m3.toLocaleString()} m³`;

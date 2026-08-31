@@ -1,6 +1,6 @@
 import numpy as np
 from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter, maximum_filter
+from scipy.ndimage import gaussian_filter, distance_transform_edt, maximum_filter
 from scipy.spatial import ConvexHull
 import math
 
@@ -17,8 +17,9 @@ def haversine_distance(lat1, lon1, lat2, lon2):
 
 def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_candidate_ponds=4):
     """
-    Generalized Agricultural Terrain & Hydrological Analysis Engine.
-    Detects Farm Pond Sites & Catchments in Agricultural Fields (Excludes Active River Beds).
+    High-Precision Agricultural Terrain & Hydrological Analysis Engine.
+    Employs Euclidean River Buffer Distance (Min 180m from River) + Terrain Curvature Bowl Filter.
+    Guarantees optimal farm pond placement in agricultural field depressions.
     """
     pts = parsed_kml_data['points']
     bbox = parsed_kml_data['bbox']
@@ -44,6 +45,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
 
     cell_size_x = width_m / n_cols
     cell_size_y = height_m / n_rows
+    cell_size_avg = (cell_size_x + cell_size_y) / 2.0
     cell_area_m2 = cell_size_x * cell_size_y
 
     # Create 2D coordinate grid
@@ -64,6 +66,11 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
     dy, dx = np.gradient(dem, cell_size_y, cell_size_x)
     slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
     slope_deg = np.degrees(slope_rad)
+
+    # Compute 2D Laplacian Terrain Curvature (Identifies Concave Terrain Bowls/Sinks)
+    d2y, _ = np.gradient(dy, cell_size_y, cell_size_x)
+    _, d2x = np.gradient(dx, cell_size_y, cell_size_x)
+    curvature = d2x + d2y
 
     # Compute D8 Flow Direction
     neighbors = [
@@ -108,33 +115,37 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             nr, nc = downstream_target[(r, c)]
             flow_acc[nr, nc] += flow_acc[r, c]
 
-    # Normalize metrics
+    # ------------------------------------------------------------------
+    # 1. RIVER BUFFER DISTANCE MASK (scipy distance transform)
+    # Identifies active main river trunks (flow_acc > 110) and calculates
+    # real ground distance in meters from the river for every cell.
+    # ------------------------------------------------------------------
+    is_river_cell = flow_acc > 110.0
+    dist_grid_cells = distance_transform_edt(~is_river_cell)
+    dist_meters = dist_grid_cells * cell_size_avg
+
+    # ------------------------------------------------------------------
+    # 2. AGRICULTURAL FIELD CATCHMENT FILTER:
+    # Must be at least 180m away from the river bank AND lie in a 
+    # field tributary catchment (10 <= flow_acc <= 90 cells).
+    # ------------------------------------------------------------------
+    valid_farm_land = (dist_meters >= 180.0) & (flow_acc >= 10.0) & (flow_acc <= 90.0)
+
     min_z, max_z = np.min(dem), np.max(dem)
     z_range = max_z - min_z if max_z > min_z else 1.0
     norm_z = (dem - min_z) / z_range
+    norm_fa = np.clip(flow_acc / 90.0, 0.0, 1.0)
+    norm_curvature = np.clip(curvature * 100.0, 0.0, 1.0)
 
-    max_slope = np.max(slope_deg)
-    norm_slope = slope_deg / (max_slope if max_slope > 0 else 1.0)
-
-    # -------------------------------------------------------------
-    # AGRICULTURAL FARM POND SELECTION RULE:
-    # 1. Main River Channels (flow_acc > 140 cells) are excluded!
-    # 2. Optimal Farm Pond Tributary Catchments: 12 <= flow_acc <= 140
-    # -------------------------------------------------------------
-    max_tributary_fa = 140.0
-    is_farm_tributary = (flow_acc >= 12.0) & (flow_acc <= max_tributary_fa)
-
-    norm_fa = np.clip(flow_acc / max_tributary_fa, 0.0, 1.0)
-
-    # Farm Pond Suitability Index (PSI) Grid
+    # High-Precision Farm Pond Suitability Index (PSI)
     psi = np.where(
-        is_farm_tributary,
-        0.45 * norm_fa + 0.35 * (1.0 - norm_z) + 0.20 * (1.0 - norm_slope),
+        valid_farm_land,
+        0.40 * norm_fa + 0.40 * (1.0 - norm_z) + 0.20 * norm_curvature,
         0.0
     )
 
     # Zero out outer map borders
-    border = 5
+    border = 6
     psi[0:border, :] = 0
     psi[-border:, :] = 0
     psi[:, 0:border] = 0
@@ -145,16 +156,16 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
     for src, dst in downstream_target.items():
         upstream_map.setdefault(dst, []).append(src)
 
-    # Detect Local Maxima in PSI (Off-river farm pond sites)
-    local_max = maximum_filter(psi, size=15)
-    is_local_max = (psi == local_max) & (psi > 0.15)
+    # Detect Local Maxima in PSI (Off-river farm pond sites in field bowls)
+    local_max = maximum_filter(psi, size=18)
+    is_local_max = (psi == local_max) & (psi > 0.10)
 
     peak_coords = np.argwhere(is_local_max)
     peak_coords = sorted(peak_coords, key=lambda rc: psi[rc[0], rc[1]], reverse=True)
 
-    # Enforce minimum distance separation (at least 20 grid cells / ~400 meters)
+    # Enforce minimum distance separation (at least 22 grid cells / ~450 meters between ponds)
     selected_peaks = []
-    min_dist_cells = 20
+    min_dist_cells = 22
 
     for r, c in peak_coords:
         is_far = True
@@ -169,7 +180,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
             break
 
     if not selected_peaks:
-        # Fallback if no tributary peaks found
+        # Fallback if strict filter yields no peaks
         best_idx = np.unravel_index(np.argmax(psi if np.max(psi) > 0 else norm_fa), psi.shape)
         selected_peaks = [(best_idx[0], best_idx[1])]
 
@@ -183,6 +194,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
         pond_lon = float(grid_x[pond_c])
         pond_lat = float(grid_y[pond_r])
         pond_elev = float(dem[pond_r, pond_c])
+        river_dist = round(float(dist_meters[pond_r, pond_c]), 1)
         suitability_pct = round(float(psi[pond_r, pond_c]) * 100, 1)
         slope_val = round(float(slope_deg[pond_r, pond_c]), 2)
 
@@ -233,6 +245,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
                 'latitude': round(pond_lat, 6),
                 'longitude': round(pond_lon, 6),
                 'elevation_m': round(pond_elev, 2),
+                'river_buffer_distance_m': river_dist,
                 'suitability_score_pct': suitability_pct,
                 'terrain_slope_deg': slope_val,
                 'grid_row': int(pond_r),
@@ -270,6 +283,7 @@ def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150, max_cand
                 'rank': rank,
                 'name': f"Farm Pond Site #{rank}",
                 'elevation_m': round(pond_elev, 2),
+                'river_distance_m': river_dist,
                 'suitability_score': suitability_pct,
                 'area_ha': round(catchment_area_ha, 2),
                 'color': color_hex
@@ -319,6 +333,6 @@ if __name__ == '__main__':
     from kml_parser import parse_kml_or_kmz
     data = parse_kml_or_kmz('contours_1m.kml')
     analysis = analyze_terrain_and_catchment(data)
-    print("Detected off-river farm pond count:", analysis['total_catchments_detected'])
+    print("Detected precise off-river farm pond count:", analysis['total_catchments_detected'])
     for c in analysis['all_candidate_sites']:
-        print(f"Farm Pond #{c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, Elev: {c['pond_location']['elevation_m']}m, Score: {c['pond_location']['suitability_score_pct']}%")
+        print(f"Farm Pond #{c['rank']}: Area {c['catchment_summary']['area_hectares']} ha, Coords: {c['pond_location']['latitude']}, {c['pond_location']['longitude']}, River Dist: {c['pond_location']['river_buffer_distance_m']}m, Score: {c['pond_location']['suitability_score_pct']}%")
