@@ -155,11 +155,10 @@ document.addEventListener('DOMContentLoaded', () => {
           const color = feature.properties.color || '#06B6D4';
           return {
             color: color,
-            weight: 3,
-            opacity: 1.0,
+            weight: 2,
+            opacity: 0.85,
             fillColor: color,
-            fillOpacity: 0.30,
-            dashArray: '6, 4'
+            fillOpacity: 0.22
           };
         },
         pointToLayer: (feature, latlng) => {
@@ -167,7 +166,7 @@ document.addEventListener('DOMContentLoaded', () => {
           const p = feature.properties;
           geoBounds.push([latlng.lat, latlng.lng]);
           return L.circleMarker(latlng, {
-            radius: 10,
+            radius: 11,
             fillColor: color,
             color: '#FFFFFF',
             weight: 3,
@@ -189,6 +188,8 @@ document.addEventListener('DOMContentLoaded', () => {
         },
         onEachFeature: (feature, layer) => {
           if (feature.geometry.type === 'Polygon') {
+            const p = feature.properties;
+            layer.bindTooltip(`<b>Catchment Basin #${p.rank || ''}</b> (${p.area_ha || ''} ha)`, { sticky: true });
             const coords = feature.geometry.coordinates[0];
             coords.forEach(c => geoBounds.push([c[1], c[0]]));
           }

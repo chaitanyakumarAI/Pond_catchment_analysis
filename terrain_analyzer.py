@@ -74,7 +74,7 @@ def _d8(dem):
 def _shapely_poly(cells,gx,gy,cx,cy,t2w):
     if not cells: return []
     boxes=[sbox(gx[c]-cx/2,gy[r]-cy/2,gx[c]+cx/2,gy[r]+cy/2) for r,c in cells]
-    u=unary_union(boxes).simplify(max(cx,cy)*0.4)
+    u=unary_union(boxes).buffer(max(cx,cy)*0.6).simplify(max(cx,cy)*0.3)
     if u.is_empty: return []
     def tr(ring):
         return [[round(lo,6),round(la,6)] for lo,la in (t2w.transform(x,y) for x,y in ring)]
@@ -109,16 +109,17 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
 
     plots={}
 
-    # 1. 3D Elevation Surface
+    # 1. 3D Elevation Surface (z-axis strictly set to 250m - 300m as requested)
     fig=plt.figure(figsize=(9,6)); ax=fig.add_subplot(111,projection='3d')
     surf=ax.plot_surface(XX,YY,Z,cmap='terrain',alpha=0.85,linewidth=0,antialiased=True)
+    ax.set_zlim(250, 300)
     # Mark pond sites
     for cand in candidates:
         lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
         el=cand['pond_location']['elevation_m']
         ax.scatter([lo],[la],[el+2],color=cand['color'],s=60,zorder=5)
     fig.colorbar(surf,ax=ax,shrink=0.4,label='Elevation (m)')
-    ax.set_title('3D Terrain Elevation + Pond Sites',fontsize=12,fontweight='bold')
+    ax.set_title('3D Terrain Elevation (250m - 300m) + Pond Sites',fontsize=12,fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
     ax.view_init(elev=35,azim=-60)
     fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')
@@ -230,10 +231,12 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         R2,C2=r+int(fdr[r,c]),c+int(fdc[r,c])
         if 0<=R2<nr2 and 0<=C2<nc2: umap.setdefault((R2,C2),[]).append((r,c))
 
-    # river = top 1% FA cells; buffer = 40% of max distance
-    river_thresh=np.percentile(fa,99); is_river=fa>=river_thresh
-    dist_r=distance_transform_edt(~is_river)*((cx+cy)/2)
-    buf=max(50.0,dist_r.max()*0.40)
+    # River Corridor Identification: top 1.5% FA cells (river network)
+    river_thresh = np.percentile(fa, 98.5)
+    is_river = fa >= river_thresh
+    dist_r = distance_transform_edt(~is_river) * ((cx + cy) / 2)
+    # Enforce minimum 100m river buffer to prevent ponds on river banks
+    buf = max(100.0, dist_r.max() * 0.25)
 
     # TWI
     sr=np.radians(np.clip(slope,0.1,89)); spa=np.maximum(fa*cx,1.0)
