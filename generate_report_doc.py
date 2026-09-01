@@ -129,8 +129,8 @@ def create_report():
     add_body("Ranga Chandra Naga Venkata Chaitanya Kumar", "Student Name: ")
     add_body("12341740", "Roll Number: ")
     add_body("https://github.com/chaitanyakumarAI/Pond_catchment_analysis.git", "GitHub Repository Link: ")
-    add_body("http://localhost:5050/analyzeContour (Public API / Local Server)", "Working API Route URL: ")
-    add_body("http://localhost:5050/", "Interactive Dashboard Web URL: ")
+    add_body("http://10.1.75.51:5237/analyzeContour (and /findCatchment)", "Working API Route URL: ")
+    add_body("http://10.1.75.51:5237/", "Live Dashboard Web URL: ")
 
     # 2. Catchment Estimation Approach
     add_heading_1("2. Terrain Analysis & Catchment Estimation Approach")
