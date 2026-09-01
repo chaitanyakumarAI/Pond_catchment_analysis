@@ -2,4 +2,15 @@ __pycache__/
 *.pyc
 .venv/
 *.egg-info/
-EOF
+
+# Generated outputs
+outputs/
+*.log
+server.log
+
+# Internal tooling (keep locally, not on GitHub)
+generate_report_doc.py
+create_ssh_bundle.py
+setup_pond_catchment.sh
+*.docx
+*.sh
