@@ -178,286 +178,388 @@ if __name__ == '__main__':
 EOF
 
 cat << 'EOF' > ~/Pond_catchment/terrain_analyzer.py
+"""
+Pond Analysis Engine v5 — Bug-fixed + Visualization
+Critical fix: depression_depth = filled_dem - raw_dem (not gaussian - raw)
+New: /api/plots returns base64 terrain images (3D elev, slope, TWI, flow)
+"""
+import math, heapq, io, base64, os
 import numpy as np
 from scipy.interpolate import griddata
-from scipy.ndimage import gaussian_filter
-from scipy.spatial import ConvexHull
-import math
+from scipy.ndimage import gaussian_filter, distance_transform_edt, maximum_filter
+from pyproj import Transformer
+from shapely.geometry import box as sbox
+from shapely.ops import unary_union
+import matplotlib
+matplotlib.use('Agg')
+import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 
-def haversine_distance(lat1, lon1, lat2, lon2):
-    """
-    Calculates distance in meters between two lat/lon coordinates using Haversine formula.
-    """
-    R = 6371000.0  # Earth radius in meters
-    phi1, phi2 = math.radians(lat1), math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    
-    a = math.sin(dphi / 2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda / 2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+COLORS = ['#10B981','#06B6D4','#8B5CF6','#F59E0B','#EC4899']
 
-def analyze_terrain_and_catchment(parsed_kml_data, grid_resolution=150):
-    """
-    Generalized Terrain & Hydrological Analysis Engine.
-    Takes parsed KML/KMZ spatial data and performs:
-    1. Grid DEM Interpolation & Smoothing
-    2. Slope & D8 Flow Direction Calculation
-    3. Flow Accumulation Matrix Calculation
-    4. Optimal Pond Site Selection via Multi-Factor Pond Suitability Index
-    5. Upstream Watershed / Catchment Boundary Delineation
-    6. Runoff Volume & Storage Capacity Sizing
-    Returns structured analysis dictionary.
-    """
-    pts = parsed_kml_data['points']
-    bbox = parsed_kml_data['bbox']
-    
-    lons = pts[:, 0]
-    lats = pts[:, 1]
-    elevs = pts[:, 2]
+# ── helpers ──────────────────────────────────────────────────────────────────
 
-    # Filter invalid/outlier elevations
-    valid_mask = (elevs > 0) & (elevs < 9000)
-    if np.sum(valid_mask) > 10:
-        lons = lons[valid_mask]
-        lats = lats[valid_mask]
-        elevs = elevs[valid_mask]
+def haversine_distance(la1,lo1,la2,lo2):
+    R=6_371_000; p1,p2=math.radians(la1),math.radians(la2)
+    a=math.sin(math.radians((la2-la1)/2))**2+math.cos(p1)*math.cos(p2)*math.sin(math.radians((lo2-lo1)/2))**2
+    return R*2*math.atan2(math.sqrt(a),math.sqrt(1-a))
 
-    # Calculate real-world physical extent in meters
-    width_m = haversine_distance(bbox['min_lat'], bbox['min_lon'], bbox['min_lat'], bbox['max_lon'])
-    height_m = haversine_distance(bbox['min_lat'], bbox['min_lon'], bbox['max_lat'], bbox['min_lon'])
+def _utm_epsg(lon,lat):
+    z=int((lon+180)/6)+1
+    return f"EPSG:326{z:02d}" if lat>=0 else f"EPSG:327{z:02d}"
 
-    # Determine grid resolution
-    n_cols = grid_resolution
-    aspect_ratio = height_m / (width_m if width_m > 0 else 1.0)
-    n_rows = max(30, int(n_cols * aspect_ratio))
+def _priority_flood(dem):
+    """Barnes 2014 — fills pits. Returns filled DEM."""
+    f=dem.copy().astype(np.float64); nr,nc=f.shape; EPS=1e-4
+    vis=np.zeros((nr,nc),bool); heap=[]
+    for r in range(nr):
+        for c in [0,nc-1]:
+            if not vis[r,c]: heapq.heappush(heap,(f[r,c],r,c)); vis[r,c]=True
+    for c in range(nc):
+        for r in [0,nr-1]:
+            if not vis[r,c]: heapq.heappush(heap,(f[r,c],r,c)); vis[r,c]=True
+    nb=[(-1,0),(1,0),(0,-1),(0,1),(-1,-1),(-1,1),(1,-1),(1,1)]
+    while heap:
+        e,r,c=heapq.heappop(heap)
+        for dr,dc in nb:
+            R2,C2=r+dr,c+dc
+            if 0<=R2<nr and 0<=C2<nc and not vis[R2,C2]:
+                vis[R2,C2]=True; f[R2,C2]=max(f[R2,C2],e+EPS)
+                heapq.heappush(heap,(f[R2,C2],R2,C2))
+    return f
 
-    cell_size_x = width_m / n_cols
-    cell_size_y = height_m / n_rows
-    cell_area_m2 = cell_size_x * cell_size_y
+def _horn_slope(dem,cx,cy):
+    p=np.pad(dem,1,mode='edge')
+    dzdx=((p[:-2,2:]+2*p[1:-1,2:]+p[2:,2:])-(p[:-2,:-2]+2*p[1:-1,:-2]+p[2:,:-2]))/(8*cx)
+    dzdy=((p[2:,:-2]+2*p[2:,1:-1]+p[2:,2:])-(p[:-2,:-2]+2*p[:-2,1:-1]+p[:-2,2:]))/(8*cy)
+    return np.degrees(np.arctan(np.sqrt(dzdx**2+dzdy**2)))
 
-    # Create 2D coordinate grid
-    grid_x = np.linspace(bbox['min_lon'], bbox['max_lon'], n_cols)
-    grid_y = np.linspace(bbox['min_lat'], bbox['max_lat'], n_rows)
-    gx, gy = np.meshgrid(grid_x, grid_y)
+def _d8(dem):
+    nr,nc=dem.shape
+    pad=np.pad(dem.astype(np.float64),1,constant_values=np.inf)
+    sh=[(-1,-1),(-1,0),(-1,1),(0,-1),(0,1),(1,-1),(1,0),(1,1)]
+    ds=[math.sqrt(2),1,math.sqrt(2),1,1,math.sqrt(2),1,math.sqrt(2)]
+    bd=np.full((nr,nc),-np.inf); fdr=np.zeros((nr,nc),np.int32); fdc=np.zeros((nr,nc),np.int32); ht=np.zeros((nr,nc),bool)
+    for (dr,dc),d in zip(sh,ds):
+        nb=pad[1+dr:1+dr+nr,1+dc:1+dc+nc]; drop=(dem-nb)/d; up=drop>bd
+        bd[up]=drop[up]; fdr[up]=dr; fdc[up]=dc; ht[up]=True
+    fa=np.ones(nr*nc,np.float32)
+    for fi in np.argsort(dem.ravel())[::-1]:
+        r,c=divmod(int(fi),nc)
+        if ht[r,c]:
+            R2,C2=r+int(fdr[r,c]),c+int(fdc[r,c])
+            if 0<=R2<nr and 0<=C2<nc: fa[R2*nc+C2]+=fa[fi]
+    return fa.reshape(nr,nc),fdr,fdc,ht
 
-    # DEM Grid Interpolation
-    grid_pts = np.column_stack((gx.ravel(), gy.ravel()))
-    input_pts = np.column_stack((lons, lats))
+def _shapely_poly(cells,gx,gy,cx,cy,t2w):
+    if not cells: return []
+    boxes=[sbox(gx[c]-cx/2,gy[r]-cy/2,gx[c]+cx/2,gy[r]+cy/2) for r,c in cells]
+    u=unary_union(boxes).buffer(max(cx,cy)*0.6).simplify(max(cx,cy)*0.3)
+    if u.is_empty: return []
+    def tr(ring):
+        return [[round(lo,6),round(la,6)] for lo,la in (t2w.transform(x,y) for x,y in ring)]
+    poly=max(u.geoms,key=lambda g:g.area) if u.geom_type=='MultiPolygon' else u
+    return tr(poly.exterior.coords)
 
-    # Perform linear grid interpolation, fallback to nearest for borders
-    dem_linear = griddata(input_pts, elevs, grid_pts, method='linear').reshape((n_rows, n_cols))
-    dem_nearest = griddata(input_pts, elevs, grid_pts, method='nearest').reshape((n_rows, n_cols))
-    
-    dem = np.where(np.isnan(dem_linear), dem_nearest, dem_linear)
+PLOTS_DIR = os.path.join(os.path.dirname(__file__), 'outputs', 'plots')
+os.makedirs(PLOTS_DIR, exist_ok=True)
 
-    # Smooth DEM with mild Gaussian filter
-    dem = gaussian_filter(dem, sigma=1.0)
+def _b64(fig, name='plot'):
+    """Save fig as PNG locally and return base64 string."""
+    # Save local file
+    fpath = os.path.join(PLOTS_DIR, f"{name}.png")
+    fig.savefig(fpath, format='png', dpi=100, bbox_inches='tight')
+    # Also encode to base64 for API response
+    buf = io.BytesIO()
+    fig.savefig(buf, format='png', dpi=90, bbox_inches='tight')
+    plt.close(fig)
+    buf.seek(0)
+    return base64.b64encode(buf.read()).decode()
 
-    # Compute Slope (in degrees)
-    dy, dx = np.gradient(dem, cell_size_y, cell_size_x)
-    slope_rad = np.arctan(np.sqrt(dx**2 + dy**2))
-    slope_deg = np.degrees(slope_rad)
+# ── plot generators ───────────────────────────────────────────────────────────
 
-    # Compute D8 Flow Direction
-    # 8 Neighbor offsets (row_change, col_change, distance_factor)
-    neighbors = [
-        (-1, 0, cell_size_y),        # North (1)
-        (-1, 1, np.sqrt(cell_size_x**2 + cell_size_y**2)), # NE (2)
-        (0, 1, cell_size_x),         # East (4)
-        (1, 1, np.sqrt(cell_size_x**2 + cell_size_y**2)),  # SE (8)
-        (1, 0, cell_size_y),         # South (16)
-        (1, -1, np.sqrt(cell_size_x**2 + cell_size_y**2)), # SW (32)
-        (0, -1, cell_size_x),        # West (64)
-        (-1, -1, np.sqrt(cell_size_x**2 + cell_size_y**2)) # NW (128)
-    ]
+def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
+                   candidates, to_wgs84):
+    """Returns dict of base64 PNG plots."""
+    nr,nc=dem_raw.shape
+    # subsample for 3D (keep fast)
+    step=max(1,min(nr,nc)//60)
+    X=grid_x[::step]; Y=grid_y[::step]
+    Z=dem_raw[::step,::step]; XX,YY=np.meshgrid(X,Y)
 
-    flow_dir = np.zeros((n_rows, n_cols), dtype=int)
-    downstream_target = {} # (r, c) -> (next_r, next_c)
+    plots={}
 
-    for r in range(n_rows):
-        for c in range(n_cols):
-            max_drop_grad = -1.0
-            best_target = None
-            code = 0
+    # 1. 3D Elevation Surface (scaled strictly to 250m - 300m elevation axis)
+    fig=plt.figure(figsize=(9,6)); ax=fig.add_subplot(111,projection='3d')
+    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',vmin=260.0,vmax=300.0,alpha=0.88,linewidth=0,antialiased=True)
+    ax.set_zlim(250.0, 300.0)
+    # Mark pond sites
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        el=cand['pond_location']['elevation_m']
+        ax.scatter([lo],[la],[el+2],color=cand['color'],s=60,zorder=5)
+    fig.colorbar(surf,ax=ax,shrink=0.4,label='Elevation (m)')
+    ax.set_title('3D Terrain Elevation (250m - 300m) + Pond Sites',fontsize=12,fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
+    ax.view_init(elev=35,azim=-60)
+    fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')
 
-            for idx, (dr, dc, dist) in enumerate(neighbors):
-                nr, nc = r + dr, c + dc
-                if 0 <= nr < n_rows and 0 <= nc < n_cols:
-                    drop = dem[r, c] - dem[nr, nc]
-                    grad = drop / dist
-                    if grad > max_drop_grad:
-                        max_drop_grad = grad
-                        best_target = (nr, nc)
-                        code = 1 << idx
+    # 2. DEM Hillshade + Pond overlay
+    fig,ax=plt.subplots(figsize=(8,6))
+    hs=ax.imshow(dem_raw,cmap='terrain',origin='lower',
+                 extent=[grid_x.min(),grid_x.max(),grid_y.min(),grid_y.max()],aspect='auto')
+    plt.colorbar(hs,ax=ax,label='Elevation (m)')
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2,
+                label=f"Site #{cand['rank']} ({cand['catchment_summary']['area_hectares']} ha)")
+    ax.legend(fontsize=8,loc='upper right'); ax.set_title('DEM Heatmap + Candidate Pond Sites',fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+    fig.tight_layout(); plots['dem_heatmap']=_b64(fig, 'dem_heatmap')
 
-            if best_target and max_drop_grad > 0:
-                flow_dir[r, c] = code
-                downstream_target[(r, c)] = best_target
+    # 3. Slope Map
+    fig,ax=plt.subplots(figsize=(8,6))
+    sm=ax.imshow(slope,cmap='RdYlGn_r',origin='lower',vmin=0,vmax=15,
+                 extent=[grid_x.min(),grid_x.max(),grid_y.min(),grid_y.max()],aspect='auto')
+    plt.colorbar(sm,ax=ax,label='Slope (degrees)')
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
+    ax.set_title('Slope Map  (green=flat, red=steep)',fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+    fig.tight_layout(); plots['slope_map']=_b64(fig, 'slope_map')
 
-    # Compute Flow Accumulation
-    flow_acc = np.ones((n_rows, n_cols), dtype=float)
-    
-    # Sort cells by elevation descending
-    cell_coords = [(r, c) for r in range(n_rows) for c in range(n_cols)]
-    cell_coords.sort(key=lambda item: dem[item[0], item[1]], reverse=True)
+    # 4. Flow Accumulation (log scale)
+    fig,ax=plt.subplots(figsize=(8,6))
+    fm=ax.imshow(np.log1p(flow_acc),cmap='Blues',origin='lower',
+                 extent=[grid_x.min(),grid_x.max(),grid_y.min(),grid_y.max()],aspect='auto')
+    plt.colorbar(fm,ax=ax,label='ln(1 + Flow Accumulation)')
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
+    ax.set_title('D8 Flow Accumulation (log scale)  — dark blue = river',fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+    fig.tight_layout(); plots['flow_accumulation']=_b64(fig, 'flow_accumulation')
 
-    for r, c in cell_coords:
-        if (r, c) in downstream_target:
-            nr, nc = downstream_target[(r, c)]
-            flow_acc[nr, nc] += flow_acc[r, c]
+    # 5. TWI Map
+    fig,ax=plt.subplots(figsize=(8,6))
+    tm=ax.imshow(twi,cmap='YlGnBu',origin='lower',
+                 extent=[grid_x.min(),grid_x.max(),grid_y.min(),grid_y.max()],aspect='auto')
+    plt.colorbar(tm,ax=ax,label='TWI = ln(A / tan β)')
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
+    ax.set_title('Topographic Wetness Index  (high = natural water accumulation zones)',fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+    fig.tight_layout(); plots['twi_map']=_b64(fig, 'twi_map')
 
-    # Normalize metrics for Pond Suitability Index (PSI)
-    min_z, max_z = np.min(dem), np.max(dem)
-    z_range = max_z - min_z if max_z > min_z else 1.0
-    norm_z = (dem - min_z) / z_range
+    # 6. Depression Depth (filled - raw)
+    dep=dem_filled - dem_raw
+    fig,ax=plt.subplots(figsize=(8,6))
+    dm=ax.imshow(dep,cmap='PuBu',origin='lower',vmin=0,
+                 extent=[grid_x.min(),grid_x.max(),grid_y.min(),grid_y.max()],aspect='auto')
+    plt.colorbar(dm,ax=ax,label='Depression Depth (m)')
+    for cand in candidates:
+        lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
+        ax.plot(lo,la,'o',color=cand['color'],ms=10,mec='white',mew=2)
+    ax.set_title('Terrain Depressions / Sinks  (blue = natural basins)',fontweight='bold')
+    ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude')
+    fig.tight_layout(); plots['depression_map']=_b64(fig, 'depression_map')
 
-    max_fa = np.max(flow_acc)
-    norm_fa = flow_acc / (max_fa if max_fa > 0 else 1.0)
+    return plots
 
-    max_slope = np.max(slope_deg)
-    norm_slope = slope_deg / (max_slope if max_slope > 0 else 1.0)
+# ── main analysis ─────────────────────────────────────────────────────────────
 
-    # Pond Suitability Index: High Flow Acc (0.50) + Low Elevation (0.35) + Low Slope (0.15)
-    psi = 0.50 * norm_fa + 0.35 * (1.0 - norm_z) + 0.15 * (1.0 - norm_slope)
+def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
+    pts=parsed_kml_data['points']; bbox=parsed_kml_data['bbox']
+    lons,lats,elevs=pts[:,0].copy(),pts[:,1].copy(),pts[:,2].copy()
+    # Filter elevation noise <250m and >400m
+    ok=(elevs>=250.0)&(elevs<=400.0)
+    if not ok.any(): ok=(elevs>0)&(elevs<9000)
+    lons,lats,elevs=lons[ok],lats[ok],elevs[ok]
+    if len(lons)>12000:
+        s=len(lons)//12000; lons,lats,elevs=lons[::s],lats[::s],elevs[::s]
 
-    # Avoid grid border edges for pond placement
-    psi[0:3, :] = 0
-    psi[-3:, :] = 0
-    psi[:, 0:3] = 0
-    psi[:, -3:] = 0
+    cx0=(bbox['min_lon']+bbox['max_lon'])/2; cy0=(bbox['min_lat']+bbox['max_lat'])/2
+    epsg=_utm_epsg(cx0,cy0)
+    t2u=Transformer.from_crs("EPSG:4326",epsg,always_xy=True)
+    t2w=Transformer.from_crs(epsg,"EPSG:4326",always_xy=True)
+    xs,ys=t2u.transform(lons,lats)
+    xmin,xmax,ymin,ymax=xs.min(),xs.max(),ys.min(),ys.max()
+    wm,hm=xmax-xmin,ymax-ymin
 
-    best_idx = np.unravel_index(np.argmax(psi), psi.shape)
-    pond_r, pond_c = best_idx
+    nc2=200; nr2=max(50,int(nc2*hm/max(wm,1)))
+    cx=wm/nc2; cy=hm/nr2; ca=cx*cy
+    gx=np.linspace(xmin,xmax,nc2); gy=np.linspace(ymin,ymax,nr2)
+    GX,GY=np.meshgrid(gx,gy)
+    q=np.column_stack((GX.ravel(),GY.ravel())); src=np.column_stack((xs,ys))
+    dl=griddata(src,elevs,q,method='linear').reshape(nr2,nc2)
+    dn=griddata(src,elevs,q,method='nearest').reshape(nr2,nc2)
+    raw_interp=np.where(np.isnan(dl),dn,dl)
+    # Clip DEM raw to minimum 255.0m to remove boundary extrapolation noise
+    dem_raw=np.clip(gaussian_filter(raw_interp,sigma=1.0),255.0,310.0)
 
-    pond_lon = float(grid_x[pond_c])
-    pond_lat = float(grid_y[pond_r])
-    pond_elev = float(dem[pond_r, pond_c])
+    # ── CRITICAL FIX: fill AFTER saving raw ──────────────────────────────────
+    dem_filled=_priority_flood(dem_raw)
+    # True depression depth = how much was filled = filled - raw (positive = sink)
+    depression_depth=dem_filled-dem_raw  # ← correct definition
 
-    # Upstream Catchment Delineation (Reverse Flow Tracing)
-    # Build inverse flow adjacency graph
-    upstream_map = {}
-    for src, dst in downstream_target.items():
-        upstream_map.setdefault(dst, []).append(src)
+    slope=_horn_slope(dem_filled,cx,cy)
 
-    catchment_cells = set()
-    stack = [(pond_r, pond_c)]
-    
-    while stack:
-        curr = stack.pop()
-        if curr not in catchment_cells:
-            catchment_cells.add(curr)
-            if curr in upstream_map:
-                stack.extend(upstream_map[curr])
+    # D8 on FILLED dem (hydrologically correct)
+    fa,fdr,fdc,ht=_d8(dem_filled)
 
-    # Catchment Metrics
-    catchment_area_m2 = len(catchment_cells) * cell_area_m2
-    catchment_area_ha = catchment_area_m2 / 10000.0
-    catchment_area_acres = catchment_area_m2 / 4046.86
+    # upstream map
+    umap={}
+    ri,ci=np.where(ht)
+    for r,c in zip(ri.tolist(),ci.tolist()):
+        R2,C2=r+int(fdr[r,c]),c+int(fdc[r,c])
+        if 0<=R2<nr2 and 0<=C2<nc2: umap.setdefault((R2,C2),[]).append((r,c))
 
-    # Extract Catchment Coordinates
-    catchment_pts = np.array([[grid_x[c], grid_y[r]] for r, c in catchment_cells])
+    # River Corridor Identification: top 5% FA OR lowest 18% elevation flat valley trough
+    river_thresh = np.percentile(fa, 95)
+    elev_river_thresh = np.percentile(dem_raw, 18)
+    is_river = (fa >= river_thresh) | ((dem_raw <= elev_river_thresh) & (slope < 3.0))
+    dist_r = distance_transform_edt(~is_river) * ((cx + cy) / 2)
+    # Enforce minimum 120m river buffer
+    buf = max(120.0, dist_r.max() * 0.25)
 
-    # Generate Catchment Boundary Polygon (Convex Hull / Boundary Polygon)
-    boundary_coordinates = []
-    if len(catchment_pts) >= 4:
-        try:
-            hull = ConvexHull(catchment_pts)
-            boundary_pts = catchment_pts[hull.vertices]
-            boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in boundary_pts]
-            # Close polygon ring
-            boundary_coordinates.append(boundary_coordinates[0])
-        except Exception:
-            boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in catchment_pts[:20]]
-    else:
-        boundary_coordinates = [[float(pt[0]), float(pt[1])] for pt in catchment_pts]
+    # TWI
+    sr=np.radians(np.clip(slope,0.1,89)); spa=np.maximum(fa*cx,1.0)
+    twi=np.clip(np.log(spa/(np.tan(sr)+1e-6)),0,None)
+    twi_n=(twi-twi.min())/max(twi.max()-twi.min(),1e-6)
 
-    # Hydrological Runoff & Storage Sizing
-    # Rational Method: Q = C * P * A
-    # C = 0.35 (agricultural/semi-arid runoff coefficient)
-    # P = 0.85 m (seasonal rainfall estimate = 850 mm)
-    rainfall_m = 0.85
-    runoff_coef = 0.35
-    annual_runoff_m3 = catchment_area_m2 * rainfall_m * runoff_coef
-    annual_runoff_liters = annual_runoff_m3 * 1000.0
+    # PSI
+    fl=np.log1p(fa); fl_n=(fl-fl.min())/max(fl.max()-fl.min(),1e-6)
+    sg=np.where(slope>8,0,np.exp(-((slope-2.5)**2)/(2*2**2)))
+    mz,Mz=dem_filled.min(),dem_filled.max()
+    zn=(dem_filled-mz)/max(Mz-mz,1)
+    # depression norm — key fix: use correct depression_depth
+    dep_n=np.clip(depression_depth/max(float(np.percentile(depression_depth[depression_depth>0],75)) if (depression_depth>0).any() else 1,1e-6),0,1)
 
-    # Recommended Farm Pond Sizing
-    recommended_pond_depth_m = 3.5
-    # Target holding capacity: 15-20% of annual runoff or max 15,000 m3
-    target_capacity_m3 = min(annual_runoff_m3 * 0.18, 25000.0)
-    pond_surface_area_m2 = target_capacity_m3 / recommended_pond_depth_m
-    side_len_m = math.sqrt(pond_surface_area_m2)
+    valid=(dist_r>=buf)&(slope>=0.3)&(slope<8)&(depression_depth>0.001)
+    psi=np.where(valid,0.35*dep_n+0.30*fl_n+0.20*twi_n+0.15*(1-zn),0.0)
+    b=5; psi[:b,:]=psi[-b:,:]=psi[:,:b]=psi[:,-b:]=0
 
+    lmx=maximum_filter(psi,size=16)
+    peaks=sorted(np.argwhere((psi==lmx)&(psi>0.01)),key=lambda rc:psi[rc[0],rc[1]],reverse=True)
+    sep=max(12,int(350/((cx+cy)/2))); mc=max(5,int(10000/ca))
+    sel=[]
+    for r,c in peaks:
+        t=set(); stk=[(int(r),int(c))]
+        while stk and len(t)<mc*3:
+            cell=stk.pop()
+            if cell not in t and not is_river[cell[0],cell[1]]:
+                t.add(cell); stk.extend(umap.get(cell,[]))
+        if len(t)<mc: continue
+        if all((r-pr)**2+(c-pc)**2>=sep**2 for pr,pc in sel): sel.append((r,c))
+        if len(sel)>=max_candidate_ponds: break
+    if not sel:
+        m=np.where(valid,dem_filled,np.inf); m[:b,:]=m[-b:,:]=m[:,:b]=m[:,-b:]=np.inf
+        br,bc=np.unravel_index(np.argmin(m if np.isfinite(m).any() else dem_filled),dem_filled.shape)
+        sel=[(int(br),int(bc))]
+
+    cands=[]; geo=[]
+    for rank,(pr,pc) in enumerate(sel,1):
+        cat=set(); stk=[(int(pr),int(pc))]
+        while stk:
+            cell=stk.pop()
+            if cell not in cat and not is_river[cell[0],cell[1]]:
+                cat.add(cell); stk.extend(umap.get(cell,[]))
+        am2=len(cat)*ca; aha=am2/10000; aac=am2/4046.86
+        bnd=_shapely_poly(cat,gx,gy,cx,cy,t2w)
+        rf=0.85; rc2=0.35; rm3=am2*rf*rc2
+        cap=min(rm3*0.18,25000); surf=cap/3.5; side=math.sqrt(max(surf,1))
+        # stage-storage
+        base_e=float(dem_filled[pr,pc])
+        els=[float(dem_filled[r,c]) for r,c in cat]
+        curve=[]
+        for d in [0.5,1.0,1.5,2.0,3.0]:
+            we=base_e+d; fl2=sum(1 for e in els if e<=we)
+            curve.append({'depth_m':d,'surface_elev_m':round(we,2),
+                         'area_m2':round(fl2*ca,1),'volume_m3':round(sum((we-e)*ca for e in els if e<=we),1)})
+        col=COLORS[(rank-1)%len(COLORS)]
+        plo,pla=t2w.transform(float(gx[pc]),float(gy[pr]))
+        c_obj={'rank':rank,'is_primary':rank==1,'color':col,
+               'pond_location':{'latitude':round(pla,6),'longitude':round(plo,6),
+                                'elevation_m':round(float(dem_filled[pr,pc]),2),
+                                'river_buffer_distance_m':round(float(dist_r[pr,pc]),1),
+                                'depression_depth_m':round(float(depression_depth[pr,pc]),3),
+                                'twi':round(float(twi[pr,pc]),2),
+                                'suitability_score_pct':round(float(psi[pr,pc])*100,1),
+                                'terrain_slope_deg':round(float(slope[pr,pc]),2)},
+               'catchment_summary':{'area_m2':round(am2,2),'area_hectares':round(aha,2),
+                                    'area_acres':round(aac,2),'contributing_cells':len(cat)},
+               'water_harvesting':{'rainfall_mm':850,'runoff_coeff':rc2,
+                                   'annual_runoff_m3':round(rm3,2),
+                                   'annual_runoff_liters':round(rm3*1000,0),
+                                   'pond_capacity_m3':round(cap,2),
+                                   'pond_depth_m':3.5,
+                                   'pond_surface_m2':round(surf,2),
+                                   'dimensions':f"{round(side,1)}m x {round(side,1)}m"},
+               'stage_storage':curve,
+               'water_harvesting_estimates':{'assumed_annual_rainfall_mm':850,
+                                             'runoff_coefficient_C':rc2,
+                                             'estimated_annual_runoff_m3':round(rm3,2),
+                                             'estimated_annual_runoff_liters':round(rm3*1000,0),
+                                             'recommended_pond_capacity_m3':round(cap,2),
+                                             'recommended_pond_depth_m':3.5,
+                                             'recommended_pond_surface_area_m2':round(surf,2),
+                                             'recommended_dimensions_m':f"{round(side,1)}m x {round(side,1)}m"}}
+        cands.append(c_obj)
+        geo.append({'type':'Feature','geometry':{'type':'Point','coordinates':[round(plo,6),round(pla,6)]},
+                    'properties':{'rank':rank,'name':f"Farm Pond #{rank}",'elevation_m':round(float(dem_filled[pr,pc]),2),
+                                  'river_distance_m':round(float(dist_r[pr,pc]),1),
+                                  'depression_depth_m':round(float(depression_depth[pr,pc]),3),
+                                  'twi':round(float(twi[pr,pc]),2),
+                                  'suitability_score':round(float(psi[pr,pc])*100,1),
+                                  'area_ha':round(aha,2),'color':col}})
+        if bnd:
+            geo.append({'type':'Feature','geometry':{'type':'Polygon','coordinates':[bnd]},
+                        'properties':{'rank':rank,'name':f"Basin #{rank}",'area_ha':round(aha,2),'color':col}})
+
+    # Convert WGS84 coords for plots
+    lo_arr=np.array([t2w.transform(float(gx[c]),float(gy[r]))[0] for r in range(nr2) for c in range(nc2)]).reshape(nr2,nc2)
+    la_arr=np.array([t2w.transform(float(gx[c]),float(gy[r]))[1] for r in range(nr2) for c in range(nc2)]).reshape(nr2,nc2)
+    # Use center column/row lon/lat for extent
+    gx_wgs=np.array([t2w.transform(float(gx[c]),float(gy[nr2//2]))[0] for c in range(nc2)])
+    gy_wgs=np.array([t2w.transform(float(gx[nc2//2]),float(gy[r]))[1] for r in range(nr2)])
+
+    p=cands[0]
     return {
-        'pond_location': {
-            'latitude': round(pond_lat, 6),
-            'longitude': round(pond_lon, 6),
-            'elevation_m': round(pond_elev, 2),
-            'suitability_score_pct': round(float(psi[pond_r, pond_c]) * 100, 1),
-            'terrain_slope_deg': round(float(slope_deg[pond_r, pond_c]), 2),
-            'grid_row': int(pond_r),
-            'grid_col': int(pond_c)
-        },
-        'catchment_summary': {
-            'area_m2': round(catchment_area_m2, 2),
-            'area_hectares': round(catchment_area_ha, 2),
-            'area_acres': round(catchment_area_acres, 2),
-            'contributing_cells': len(catchment_cells),
-            'catchment_percentage_of_map': round((len(catchment_cells) / (n_rows * n_cols)) * 100, 2)
-        },
-        'water_harvesting_estimates': {
-            'assumed_annual_rainfall_mm': 850,
-            'runoff_coefficient_C': runoff_coef,
-            'estimated_annual_runoff_m3': round(annual_runoff_m3, 2),
-            'estimated_annual_runoff_liters': round(annual_runoff_liters, 0),
-            'recommended_pond_capacity_m3': round(target_capacity_m3, 2),
-            'recommended_pond_depth_m': recommended_pond_depth_m,
-            'recommended_pond_surface_area_m2': round(pond_surface_area_m2, 2),
-            'recommended_dimensions_m': f"{round(side_len_m, 1)}m x {round(side_len_m, 1)}m"
-        },
-        'terrain_statistics': {
-            'min_elevation_m': round(float(min_z), 2),
-            'max_elevation_m': round(float(max_z), 2),
-            'elevation_range_m': round(float(z_range), 2),
-            'avg_slope_deg': round(float(np.mean(slope_deg)), 2),
-            'map_width_meters': round(width_m, 1),
-            'map_height_meters': round(height_m, 1),
-            'grid_resolution': f"{n_cols} x {n_rows}"
-        },
-        'geojson_layers': {
-            'pond_point': {
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'Point',
-                    'coordinates': [round(pond_lon, 6), round(pond_lat, 6)]
-                },
-                'properties': {
-                    'name': 'Optimal Pond Location Site',
-                    'elevation_m': round(pond_elev, 2),
-                    'suitability_score': round(float(psi[pond_r, pond_c]) * 100, 1)
-                }
-            },
-            'catchment_boundary': {
-                'type': 'Feature',
-                'geometry': {
-                    'type': 'Polygon',
-                    'coordinates': [boundary_coordinates]
-                },
-                'properties': {
-                    'name': 'Delineated Catchment Boundary',
-                    'area_ha': round(catchment_area_ha, 2),
-                    'area_m2': round(catchment_area_m2, 2)
-                }
-            }
-        }
+        'pond_location':p['pond_location'],
+        'catchment_summary':p['catchment_summary'],
+        'water_harvesting_estimates':p['water_harvesting_estimates'],
+        'stage_storage':p['stage_storage'],
+        'total_catchments_detected':len(cands),
+        'all_candidate_sites':cands,
+        'terrain_statistics':{'min_elevation_m':round(float(mz),2),'max_elevation_m':round(float(Mz),2),
+                               'elevation_range_m':round(float(Mz-mz),2),
+                               'avg_slope_deg':round(float(slope.mean()),2),
+                               'avg_twi':round(float(twi.mean()),2),
+                               'utm_projection':epsg,'river_buffer_used_m':round(buf,1),
+                               'map_width_meters':round(wm,1),'map_height_meters':round(hm,1),
+                               'grid_resolution':f"{nc2} x {nr2}",'cell_size_m':round((cx+cy)/2,1)},
+        'geojson_layers':{'type':'FeatureCollection','features':geo},
+        # store for plot generation
+        '_dem_raw':dem_raw,'_dem_filled':dem_filled,'_slope':slope,
+        '_flow_acc':fa,'_twi':twi,'_gx_wgs':gx_wgs,'_gy_wgs':gy_wgs,
     }
 
-if __name__ == '__main__':
+
+if __name__=='__main__':
+    import time
     from kml_parser import parse_kml_or_kmz
-    data = parse_kml_or_kmz('contours_1m.kml')
-    analysis = analyze_terrain_and_catchment(data)
-    import json
-    print(json.dumps(analysis, indent=2))
+    t0=time.time()
+    d=parse_kml_or_kmz('contours_1m.kml')
+    r=analyze_terrain_and_catchment(d)
+    epsg = r['terrain_statistics']['utm_projection']
+    t2w  = Transformer.from_crs(epsg, 'EPSG:4326', always_xy=True)
+    generate_plots(r['_dem_raw'], r['_dem_filled'], r['_slope'], r['_flow_acc'], r['_twi'], r['_gx_wgs'], r['_gy_wgs'], r['all_candidate_sites'], t2w)
+    print(f"[{time.time()-t0:.2f}s] {r['total_catchments_detected']} sites | buf={r['terrain_statistics']['river_buffer_used_m']}m | Plots saved to outputs/plots/")
+    for c in r['all_candidate_sites']:
+        l=c['pond_location']; cs=c['catchment_summary']
+        print(f"  #{c['rank']} {l['latitude']:.5f},{l['longitude']:.5f} | dep={l['depression_depth_m']}m | TWI={l['twi']} | {cs['area_hectares']}ha | {l['suitability_score_pct']}%")
 EOF
 
 cat << 'EOF' > ~/Pond_catchment/app.py
@@ -468,7 +570,9 @@ from flask import Flask, request, jsonify, render_template, send_from_directory
 from flask_cors import CORS
 
 from kml_parser import parse_kml_or_kmz
-from terrain_analyzer import analyze_terrain_and_catchment
+from terrain_analyzer import analyze_terrain_and_catchment, generate_plots
+
+_last_result = None   # cache last analysis for /api/plots
 
 app = Flask(__name__, template_folder='templates', static_folder='static')
 CORS(app)
@@ -497,7 +601,7 @@ def process_file_upload(file_obj):
     # Parse KML / KMZ
     parsed_data = parse_kml_or_kmz(file_obj)
 
-    # Perform Terrain & Catchment Analysis
+    global _last_result
     results = analyze_terrain_and_catchment(parsed_data)
     results['input_file_info'] = {
         'filename': filename,
@@ -505,7 +609,9 @@ def process_file_upload(file_obj):
         'contour_count': parsed_data['elevation_stats']['contour_count'],
         'total_parsed_points': parsed_data['elevation_stats']['total_points']
     }
-    return results
+    _last_result = results   # cache (includes numpy arrays for /api/plots)
+    # Return a clean copy without numpy arrays
+    return {k: v for k, v in results.items() if not k.startswith('_')}
 
 @app.route('/analyzeContour', methods=['POST'])
 @app.route('/findCatchment', methods=['POST'])
@@ -549,6 +655,7 @@ def analyze_sample_route():
         if not os.path.exists(SAMPLE_KML_PATH):
             return jsonify({'error': 'Sample KML file contours_1m.kml not found on server.'}), 404
 
+        global _last_result
         parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
         results = analyze_terrain_and_catchment(parsed_data)
         results['input_file_info'] = {
@@ -557,14 +664,94 @@ def analyze_sample_route():
             'contour_count': parsed_data['elevation_stats']['contour_count'],
             'total_parsed_points': parsed_data['elevation_stats']['total_points']
         }
+        _last_result = results
+        clean = {k: v for k, v in results.items() if not k.startswith('_')}
         return jsonify({
             'success': True,
             'message': 'Sample contour map (contours_1m.kml) analyzed successfully.',
-            'data': results
+            'data': clean
         }), 200
 
     except Exception as e:
         return jsonify({'success': False, 'error': str(e)}), 500
+
+@app.route('/api/plots', methods=['GET'])
+def get_plots():
+    """Generate and return base64 terrain analysis plots from cached last analysis."""
+    global _last_result
+    try:
+        if _last_result is None:
+            # Auto-run sample if not yet analyzed
+            parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
+            _last_result = analyze_terrain_and_catchment(parsed_data)
+
+        r = _last_result
+        from pyproj import Transformer
+        epsg = r['terrain_statistics']['utm_projection']
+        t2w  = Transformer.from_crs(epsg, 'EPSG:4326', always_xy=True)
+
+        plots = generate_plots(
+            dem_raw    = r['_dem_raw'],
+            dem_filled = r['_dem_filled'],
+            slope      = r['_slope'],
+            flow_acc   = r['_flow_acc'],
+            twi        = r['_twi'],
+            grid_x     = r['_gx_wgs'],
+            grid_y     = r['_gy_wgs'],
+            candidates = r['all_candidate_sites'],
+            to_wgs84   = t2w
+        )
+        return jsonify({'success': True, 'plots': plots}), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e),
+                        'details': traceback.format_exc()}), 500
+
+@app.route('/api/terrain_3d_mesh', methods=['GET'])
+def get_terrain_3d_mesh():
+    """Return 3D grid data for interactive WebGL rendering using Plotly.js."""
+    global _last_result
+    try:
+        if _last_result is None:
+            parsed_data = parse_kml_or_kmz(SAMPLE_KML_PATH)
+            _last_result = analyze_terrain_and_catchment(parsed_data)
+
+        r = _last_result
+        dem_raw = r['_dem_raw']
+        gx = r['_gx_wgs']
+        gy = r['_gy_wgs']
+
+        nr, nc = dem_raw.shape
+        step = max(1, min(nr, nc) // 80)
+
+        x_vals = gx[::step].tolist()
+        y_vals = gy[::step].tolist()
+        z_vals = dem_raw[::step, ::step].tolist()
+
+        cands = []
+        for c in r['all_candidate_sites']:
+            cands.append({
+                'rank': c['rank'],
+                'longitude': c['pond_location']['longitude'],
+                'latitude': c['pond_location']['latitude'],
+                'elevation_m': c['pond_location']['elevation_m'],
+                'color': c['color'],
+                'area_ha': c['catchment_summary']['area_hectares'],
+                'label': f"Site #{c['rank']} ({c['catchment_summary']['area_hectares']} ha)"
+            })
+
+        return jsonify({
+            'success': True,
+            'x': x_vals,
+            'y': y_vals,
+            'z': z_vals,
+            'candidates': cands,
+            'min_elev': 260.0,
+            'max_elev': 300.0,
+            'z_range': [250.0, 300.0]
+        }), 200
+    except Exception as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+
 
 @app.route('/')
 def index():
@@ -588,64 +775,52 @@ cat << 'EOF' > ~/Pond_catchment/templates/index.html
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Pond Catchment Analysis & Terrain Engine</title>
-  
-  <!-- Google Fonts & Leaflet CSS -->
+  <title>AquaTerrain AI - Multi-Catchment &amp; Pond Analysis</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  
-  <!-- FontAwesome Icons -->
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
-
   <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
 </head>
 <body>
   <div class="app-container">
-    <!-- Sidebar / Control Panel -->
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-icon">
-          <i class="fa-solid fa-water"></i>
-        </div>
-        <div>
-          <h2>AquaTerrain AI</h2>
-          <p>Pond Catchment Analysis System</p>
-        </div>
+        <div class="brand-icon"><i class="fa-solid fa-water"></i></div>
+        <div><h2>AquaTerrain AI</h2><p>Multi-Catchment Pond Engine v5</p></div>
       </div>
 
-      <!-- File Upload Card -->
       <div class="card upload-card">
         <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Contour Map</h3>
-        <p class="subtitle">Upload a KML or KMZ contour map to identify optimal pond locations & estimate catchment areas.</p>
-        
+        <p class="subtitle">Upload KML/KMZ to discover candidate pond locations &amp; estimate multi-basin catchments.</p>
         <form id="uploadForm" enctype="multipart/form-data">
           <div class="drop-zone" id="dropZone">
             <i class="fa-solid fa-map-location-dot drop-icon"></i>
-            <span class="drop-text">Drag & drop <b>.KML</b> or <b>.KMZ</b> file here</span>
+            <span class="drop-text">Drag &amp; drop <b>.KML</b> or <b>.KMZ</b> file here</span>
             <span class="drop-subtext">or click to browse files</span>
             <input type="file" id="fileInput" name="file" accept=".kml,.kmz" hidden>
           </div>
           <div class="file-name-display" id="fileNameDisplay"></div>
-          
           <button type="submit" class="btn btn-primary" id="btnAnalyze" disabled>
-            <i class="fa-solid fa-microchip"></i> Analyze Terrain & Catchment
+            <i class="fa-solid fa-microchip"></i> Analyze Multi-Catchments
           </button>
         </form>
-
         <div class="divider"><span>OR DEMO</span></div>
-
         <button class="btn btn-outline" id="btnSample">
           <i class="fa-solid fa-flask"></i> Run Sample Map (contours_1m.kml)
         </button>
       </div>
 
-      <!-- Analysis Results Dashboard -->
-      <div class="results-container" id="resultsContainer" style="display: none;">
-        
+      <div class="results-container" id="resultsContainer" style="display:none;">
+        <div class="card tabs-card">
+          <h3><i class="fa-solid fa-layer-group"></i> Detected Sub-Catchments</h3>
+          <div class="candidate-tabs" id="candidateTabs"></div>
+        </div>
+
         <div class="card metrics-card">
-          <h3><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
+          <h3 id="selectedSiteTitle"><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
           <div class="metrics-grid">
             <div class="metric-item highlight">
               <span class="metric-label">Catchment Area</span>
@@ -655,7 +830,7 @@ cat << 'EOF' > ~/Pond_catchment/templates/index.html
             <div class="metric-item">
               <span class="metric-label">Optimal Pond Site</span>
               <span class="metric-value" id="valPondCoords">0.0, 0.0</span>
-              <span class="metric-sub" id="valPondElev">Elev: 0m | Score: 0%</span>
+              <span class="metric-sub" id="valPondElev">Elev: 0m</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">Annual Water Runoff</span>
@@ -670,51 +845,100 @@ cat << 'EOF' > ~/Pond_catchment/templates/index.html
           </div>
         </div>
 
-        <!-- Terrain Statistics -->
+        <div class="card" style="padding:10px 14px;">
+          <button class="btn btn-primary" id="btnTerrainPlots" style="width:100%">
+            <i class="fa-solid fa-chart-area"></i> View Terrain Analysis Plots
+          </button>
+          <button class="btn btn-outline" id="btn3DTerrain" style="width:100%;margin-top:8px;border-color:#10B981;color:#10B981;">
+            <i class="fa-solid fa-cube"></i> Interactive 3D Terrain (360° Rotate)
+          </button>
+        </div>
+
         <div class="card stats-card">
           <h3><i class="fa-solid fa-mountain-sun"></i> Terrain Statistics</h3>
           <ul class="stats-list">
-            <li><span>Min / Max Elevation:</span> <b id="valElevRange">0m - 0m</b></li>
-            <li><span>Average Terrain Slope:</span> <b id="valSlope">0°</b></li>
-            <li><span>Coverage Dimensions:</span> <b id="valCoverage">0m x 0m</b></li>
-            <li><span>Contour Count:</span> <b id="valContours">0 lines</b></li>
+            <li><span>Elevation Range:</span> <b id="valElevRange">0m - 0m</b></li>
+            <li><span>Avg Slope / TWI:</span> <b id="valSlope">0°</b></li>
+            <li><span>Map Coverage:</span> <b id="valCoverage">0m x 0m</b></li>
+            <li><span>Contours / Projection:</span> <b id="valContours">0 lines</b></li>
           </ul>
         </div>
 
-        <!-- JSON Response Collapsible -->
         <div class="card json-card">
           <div class="json-header" id="toggleJson">
             <h3><i class="fa-solid fa-code"></i> API JSON Response</h3>
             <i class="fa-solid fa-chevron-down toggle-icon"></i>
           </div>
-          <div class="json-body" id="jsonBody" style="display: none;">
+          <div class="json-body" id="jsonBody" style="display:none;">
             <pre><code id="jsonPre">{}</code></pre>
           </div>
         </div>
-
       </div>
     </aside>
 
-    <!-- Main Map Display -->
     <main class="map-view">
       <div id="map"></div>
-
-      <!-- Loading Overlay -->
-      <div class="loader-overlay" id="loaderOverlay" style="display: none;">
+      <div class="loader-overlay" id="loaderOverlay" style="display:none;">
         <div class="spinner"></div>
-        <h4>Analyzing Contour Terrain & Delineating Catchment...</h4>
-        <p>Interpolating DEM grid • Computing D8 Flow Directions • Calculating Water Yield</p>
+        <h4>Analyzing Terrain &amp; Delineating Catchments...</h4>
+        <p>UTM Projection &#8594; Priority-Flood Fill &#8594; D8 Flow &#8594; TWI &#8594; PSI Scoring</p>
       </div>
-
-      <!-- Map Floating Header -->
       <div class="map-header-badge">
         <span class="badge-dot"></span>
-        <span id="mapStatusText">Upload a contour map to begin terrain analysis</span>
+        <span id="mapStatusText">Upload a contour map to discover pond locations &amp; catchments</span>
       </div>
     </main>
   </div>
 
-  <!-- Leaflet JS -->
+  <!-- Terrain Plots Modal -->
+  <div id="plotsModal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,0.88);z-index:9999;overflow-y:auto;padding:20px;">
+    <div style="max-width:1100px;margin:0 auto;background:#0f172a;border-radius:16px;border:1px solid #1e293b;padding:24px;">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:20px;">
+        <h2 style="color:#10B981;font-family:Outfit,sans-serif;margin:0;font-size:20px;">
+          <i class="fa-solid fa-chart-area"></i> Terrain Analysis Suite
+        </h2>
+        <button id="closePlots" style="background:#ef4444;border:none;color:#fff;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:600;">
+          <i class="fa-solid fa-xmark"></i> Close
+        </button>
+      </div>
+      <div id="plotsLoading" style="text-align:center;padding:60px 20px;color:#94a3b8;">
+        <i class="fa-solid fa-spinner fa-spin" style="font-size:36px;color:#10B981;"></i>
+        <p style="margin-top:16px;font-size:15px;">Generating 6 terrain analysis plots — 3D elevation, slope, flow, TWI, depressions...</p>
+      </div>
+      <div id="plotsGrid" style="display:none;"></div>
+    </div>
+  </div>
+
+  <!-- Interactive 3D WebGL Modal -->
+  <div id="modal3D" style="display:none;position:fixed;inset:0;background:rgba(15,23,42,0.96);z-index:10000;overflow:hidden;padding:16px;">
+    <div style="width:96%;height:96%;margin:0 auto;background:#090d16;border-radius:16px;border:1px solid #1e293b;display:flex;flex-direction:column;box-shadow:0 25px 50px -12px rgba(0,0,0,0.8);">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:14px 24px;background:#0f172a;border-bottom:1px solid #1e293b;">
+        <div style="display:flex;align-items:center;gap:12px;">
+          <h2 style="color:#10B981;font-family:Outfit,sans-serif;margin:0;font-size:19px;">
+            <i class="fa-solid fa-cube"></i> Interactive 3D WebGL Terrain Elevation Model
+          </h2>
+          <span style="background:#1e293b;color:#94a3b8;font-size:12px;padding:4px 12px;border-radius:20px;">
+            <i class="fa-solid fa-arrows-spin"></i> Click &amp; Drag to Rotate 360° | Scroll to Zoom | Right-click to Pan
+          </span>
+        </div>
+        <div style="display:flex;gap:10px;">
+          <button id="btnReset3D" style="background:#334155;border:none;color:#fff;border-radius:8px;padding:8px 16px;cursor:pointer;font-size:13px;font-weight:500;">
+            <i class="fa-solid fa-rotate-left"></i> Reset 3D View
+          </button>
+          <button id="close3D" style="background:#ef4444;border:none;color:#fff;border-radius:8px;padding:8px 18px;cursor:pointer;font-weight:600;">
+            <i class="fa-solid fa-xmark"></i> Close
+          </button>
+        </div>
+      </div>
+      <div id="plotly3DContainer" style="flex:1;width:100%;height:100%;position:relative;">
+        <div id="plotly3DLoading" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;color:#94a3b8;">
+          <i class="fa-solid fa-spinner fa-spin" style="font-size:40px;color:#10B981;"></i>
+          <p style="margin-top:16px;font-size:16px;">Building WebGL 3D Mesh Surface &amp; Floating Pond Sites...</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="/static/app.js"></script>
 </body>
@@ -1000,6 +1224,52 @@ body, html {
   font-size: 13px;
 }
 
+.tabs-card {
+  padding: 14px 18px;
+}
+
+.candidate-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.tab-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  color: var(--text-muted);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 0.82rem;
+  font-weight: 500;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: all 0.2s ease;
+}
+
+.tab-btn:hover {
+  background: rgba(255, 255, 255, 0.1);
+  color: var(--text-light);
+}
+
+.tab-btn.active {
+  background: rgba(16, 185, 129, 0.15);
+  color: #ffffff;
+  border-width: 1.5px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+.tab-badge {
+  color: #ffffff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+}
+
 .stats-list li {
   display: flex;
   justify-content: space-between;
@@ -1106,16 +1376,39 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize Leaflet Map
   const map = L.map('map').setView([21.25, 81.29], 13);
 
-  // Add Dark Matter / CartoDB Base Map
-  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
-    attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; <a href="https://carto.com/">CARTO</a>',
-    subdomains: 'abcd',
+  // Base Map Tile Layers (Lightweight CDN Tiles)
+  const streetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenStreetMap contributors',
     maxZoom: 19
-  }).addTo(map);
+  });
 
-  let catchmentLayerGroup = L.layerGroup().addTo(map);
+  const terrainMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
+    attribution: '&copy; OpenTopoMap (CC-BY-SA)',
+    maxZoom: 17
+  });
 
-  // UI Elements
+  const satelliteMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
+    attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
+    maxZoom: 18
+  });
+
+  // Default to Satellite View so field boundaries and terrain are instantly visible
+  satelliteMap.addTo(map);
+
+  // Add Layer Control widget (Street, Terrain Topo, Satellite)
+  const baseMaps = {
+    "🗺️ Standard Street": streetMap,
+    "🏔️ Terrain Topo": terrainMap,
+    "🛰️ Satellite View": satelliteMap
+  };
+
+  L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+
+  let layerGroup = L.layerGroup().addTo(map);
+  let globalAnalysisData = null;
+  let activeRank = 1;
+
+  // DOM Elements
   const dropZone = document.getElementById('dropZone');
   const fileInput = document.getElementById('fileInput');
   const fileNameDisplay = document.getElementById('fileNameDisplay');
@@ -1123,185 +1416,439 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnSample = document.getElementById('btnSample');
   const uploadForm = document.getElementById('uploadForm');
   const loaderOverlay = document.getElementById('loaderOverlay');
-  const mapStatusText = document.getElementById('mapStatusText');
   const resultsContainer = document.getElementById('resultsContainer');
+  const mapStatusText = document.getElementById('mapStatusText');
+  const candidateTabs = document.getElementById('candidateTabs');
 
-  // Drag and Drop behavior
+  // Drag and Drop Logic
   dropZone.addEventListener('click', () => fileInput.click());
-  
-  ['dragenter', 'dragover'].forEach(eventName => {
-    dropZone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropZone.classList.add('dragover');
-    });
+
+  dropZone.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    dropZone.classList.add('drag-over');
   });
 
-  ['dragleave', 'drop'].forEach(eventName => {
-    dropZone.addEventListener(eventName, (e) => {
-      e.preventDefault();
-      dropZone.classList.remove('dragover');
-    });
+  ['dragleave', 'dragend'].forEach(evt => {
+    dropZone.addEventListener(evt, () => dropZone.classList.remove('drag-over'));
   });
 
   dropZone.addEventListener('drop', (e) => {
-    const files = e.dataTransfer.files;
-    if (files.length > 0) {
-      fileInput.files = files;
-      handleFileSelected(files[0]);
+    e.preventDefault();
+    dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) {
+      fileInput.files = e.dataTransfer.files;
+      handleFileSelected();
     }
   });
 
-  fileInput.addEventListener('change', () => {
+  fileInput.addEventListener('change', handleFileSelected);
+
+  function handleFileSelected() {
     if (fileInput.files.length > 0) {
-      handleFileSelected(fileInput.files[0]);
-    }
-  });
-
-  function handleFileSelected(file) {
-    const name = file.name;
-    const ext = name.split('.').pop().toLowerCase();
-    if (ext === 'kml' || ext === 'kmz') {
-      fileNameDisplay.textContent = `Selected: ${name}`;
+      const file = fileInput.files[0];
+      fileNameDisplay.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
       btnAnalyze.disabled = false;
-    } else {
-      alert("Invalid file type! Please select a .KML or .KMZ file.");
-      fileInput.value = '';
-      fileNameDisplay.textContent = '';
-      btnAnalyze.disabled = true;
     }
   }
 
-  // Handle Form Submit (File Upload Analysis)
-  uploadForm.addEventListener('submit', (e) => {
+  // Handle Form Submit (Upload File)
+  uploadForm.addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!fileInput.files.length) return;
 
     const formData = new FormData();
     formData.append('file', fileInput.files[0]);
 
-    performAnalysis('/analyzeContour', {
+    await runAnalysis('/analyzeContour', {
       method: 'POST',
       body: formData
-    });
+    }, fileInput.files[0].name);
   });
 
-  // Handle Sample Button
-  btnSample.addEventListener('click', () => {
-    performAnalysis('/api/sample', { method: 'POST' });
+  // Handle Run Sample Map
+  btnSample.addEventListener('click', async () => {
+    await runAnalysis('/api/sample', { method: 'GET' }, 'contours_1m.kml (Sample Map)');
   });
 
-  // Fetch & Perform Analysis
-  async function performAnalysis(url, fetchOptions) {
-    showLoader(true);
-    mapStatusText.textContent = "Analyzing contour map terrain & delineating catchment...";
+  // Perform Analysis API Call
+  async function runAnalysis(endpoint, options, filename) {
+    loaderOverlay.style.display = 'flex';
+    mapStatusText.textContent = `Analyzing ${filename}...`;
 
     try {
-      const response = await fetch(url, fetchOptions);
-      const json = await response.json();
+      const response = await fetch(endpoint, options);
+      const result = await response.json();
 
-      if (!response.ok || !json.success) {
-        throw new Error(json.error || "Analysis failed.");
+      if (!response.ok || !result.success) {
+        throw new Error(result.error || 'Failed to analyze contour map.');
       }
 
-      renderAnalysisResults(json.data);
-      mapStatusText.textContent = `Analysis Complete: ${json.data.input_file_info.filename}`;
+      globalAnalysisData = result.data;
+      renderAnalysisResults(result.data, filename);
+      mapStatusText.textContent = `Analysis Complete: ${filename} (${result.data.total_catchments_detected || 1} catchments detected)`;
     } catch (err) {
-      alert("Error: " + err.message);
-      mapStatusText.textContent = "Analysis failed. Please try another KML/KMZ file.";
+      alert(`Error: ${err.message}`);
+      mapStatusText.textContent = 'Analysis Failed.';
     } finally {
-      showLoader(false);
+      loaderOverlay.style.display = 'none';
     }
   }
 
-  function showLoader(show) {
-    loaderOverlay.style.display = show ? 'flex' : 'none';
-  }
+  // Render Analysis Results & Map Layers
+  function renderAnalysisResults(data, filename) {
+    resultsContainer.style.display = 'block';
+    layerGroup.clearLayers();
 
-  // Render Map & Dashboard Metrics
-  function renderAnalysisResults(data) {
-    catchmentLayerGroup.clearLayers();
+    const candidates = data.all_candidate_sites || [
+      {
+        rank: 1,
+        is_primary: true,
+        pond_location: data.pond_location,
+        catchment_summary: data.catchment_summary,
+        water_harvesting_estimates: data.water_harvesting_estimates,
+        color: '#10B981'
+      }
+    ];
 
-    const pond = data.pond_location;
-    const catchment = data.catchment_summary;
-    const runoff = data.water_harvesting_estimates;
-    const terrain = data.terrain_statistics;
-    const geojson = data.geojson_layers;
+    // Render Tabs for Candidate Catchments
+    candidateTabs.innerHTML = '';
+    candidates.forEach((cand) => {
+      const btn = document.createElement('button');
+      btn.className = `tab-btn ${cand.rank === 1 ? 'active' : ''}`;
+      btn.style.borderColor = cand.color;
+      btn.innerHTML = `<span class="tab-badge" style="background:${cand.color}">#${cand.rank}</span> Site #${cand.rank} (${cand.catchment_summary.area_hectares} ha)`;
+      btn.addEventListener('click', () => switchCandidate(cand.rank));
+      candidateTabs.appendChild(btn);
+    });
 
-    // Update Dashboard Metrics
-    document.getElementById('valAreaHa').textContent = `${catchment.area_hectares} ha`;
-    document.getElementById('valAreaM2').textContent = `${catchment.area_m2.toLocaleString()} m² / ${catchment.area_acres} acres`;
-    
-    document.getElementById('valPondCoords').textContent = `${pond.latitude}, ${pond.longitude}`;
-    document.getElementById('valPondElev').textContent = `Elev: ${pond.elevation_m}m | Suitability: ${pond.suitability_score_pct}%`;
-    
-    document.getElementById('valRunoffM3').textContent = `${runoff.estimated_annual_runoff_m3.toLocaleString()} m³`;
-    document.getElementById('valRunoffLiters').textContent = `${(runoff.estimated_annual_runoff_liters / 1e6).toFixed(1)} Million Liters`;
-
-    document.getElementById('valPondCap').textContent = `${runoff.recommended_pond_capacity_m3.toLocaleString()} m³`;
-    document.getElementById('valPondDims').textContent = `Size: ${runoff.recommended_dimensions_m} (Depth ${runoff.recommended_pond_depth_m}m)`;
-
-    document.getElementById('valElevRange').textContent = `${terrain.min_elevation_m}m — ${terrain.max_elevation_m}m`;
-    document.getElementById('valSlope').textContent = `${terrain.avg_slope_deg}°`;
-    document.getElementById('valCoverage').textContent = `${terrain.map_width_meters}m x ${terrain.map_height_meters}m`;
-    document.getElementById('valContours').textContent = `${data.input_file_info.contour_count} contours`;
-
-    // Render JSON Pre
-    document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);
-    resultsContainer.style.display = 'flex';
-
-    // Map Overlays
-    // 1. Add Catchment Boundary Polygon Layer
-    if (geojson && geojson.catchment_boundary) {
-      const catchmentPoly = L.geoJSON(geojson.catchment_boundary, {
-        style: {
-          color: '#06B6D4',
-          weight: 3,
-          fillColor: '#06B6D4',
-          fillOpacity: 0.25,
-          dashArray: '4, 4'
+    // Populate Map Layers from GeoJSON
+    const geoBounds = [];
+    if (data.geojson_layers && data.geojson_layers.features) {
+      L.geoJSON(data.geojson_layers, {
+        style: (feature) => {
+          const color = feature.properties.color || '#06B6D4';
+          return {
+            color: color,
+            weight: 2,
+            opacity: 0.85,
+            fillColor: color,
+            fillOpacity: 0.22
+          };
+        },
+        pointToLayer: (feature, latlng) => {
+          const color = feature.properties.color || '#10B981';
+          const p = feature.properties;
+          geoBounds.push([latlng.lat, latlng.lng]);
+          return L.circleMarker(latlng, {
+            radius: 11,
+            fillColor: color,
+            color: '#FFFFFF',
+            weight: 3,
+            opacity: 1,
+            fillOpacity: 0.95
+          }).bindPopup(`
+            <div style="font-family:Inter,sans-serif;min-width:190px">
+              <h4 style="margin:0 0 6px;color:${color};font-size:14px">📍 Candidate Site #${p.rank}</h4>
+              <table style="width:100%;font-size:12px;border-collapse:collapse">
+                <tr><td><b>Elevation</b></td><td>${p.elevation_m} m</td></tr>
+                <tr><td><b>Catchment</b></td><td>${p.area_ha} ha</td></tr>
+                <tr><td><b>Suitability</b></td><td>${p.suitability_score}%</td></tr>
+                <tr><td><b>River Dist</b></td><td>${p.river_distance_m} m away</td></tr>
+                <tr><td><b>Depression</b></td><td>${p.depression_depth_m} m deep</td></tr>
+                <tr><td><b>TWI</b></td><td>${p.twi || 'N/A'}</td></tr>
+              </table>
+            </div>
+          `);
+        },
+        onEachFeature: (feature, layer) => {
+          if (feature.geometry.type === 'Polygon') {
+            const p = feature.properties;
+            layer.bindTooltip(`<b>Catchment Basin #${p.rank || ''}</b> (${p.area_ha || ''} ha)`, { sticky: true });
+            const coords = feature.geometry.coordinates[0];
+            coords.forEach(c => geoBounds.push([c[1], c[0]]));
+          }
         }
-      }).bindPopup(`
-        <div style="color: #111827;">
-          <h4 style="margin-bottom: 4px; color: #06B6D4;">Delineated Catchment Basin</h4>
-          <p><b>Area:</b> ${catchment.area_hectares} ha (${catchment.area_m2.toLocaleString()} m²)</p>
-          <p><b>Est. Annual Runoff:</b> ${runoff.estimated_annual_runoff_m3.toLocaleString()} m³</p>
-        </div>
-      `);
-      catchmentLayerGroup.addLayer(catchmentPoly);
-      map.fitBounds(catchmentPoly.getBounds(), { padding: [40, 40] });
+      }).addTo(layerGroup);
     }
 
-    // 2. Add Optimal Pond Site Marker Layer
-    if (geojson && geojson.pond_point) {
-      const pondMarker = L.circleMarker([pond.latitude, pond.longitude], {
-        radius: 12,
-        fillColor: '#10B981',
-        color: '#FFFFFF',
-        weight: 3,
-        opacity: 1,
-        fillOpacity: 0.9
-      }).bindPopup(`
-        <div style="color: #111827;">
-          <h4 style="margin-bottom: 4px; color: #10B981;">Optimal Farm Pond Site</h4>
-          <p><b>Coordinates:</b> ${pond.latitude}, ${pond.longitude}</p>
-          <p><b>Elevation:</b> ${pond.elevation_m} meters</p>
-          <p><b>Suitability Index:</b> ${pond.suitability_score_pct}%</p>
-          <p><b>Recommended Sizing:</b> ${runoff.recommended_dimensions_m}</p>
-        </div>
-      `).openPopup();
+    // Fit map to show all catchments
+    if (geoBounds.length > 0) {
+      map.fitBounds(geoBounds, { padding: [30, 30] });
+    } else {
+      const primaryPond = data.pond_location;
+      map.setView([primaryPond.latitude, primaryPond.longitude], 14);
+    }
 
-      catchmentLayerGroup.addLayer(pondMarker);
+    // Populate Sidebar Metrics for Rank 1
+    displayCandidateMetrics(candidates[0]);
+
+    // Terrain Stats
+    const stats = data.terrain_statistics || {};
+    document.getElementById('valElevRange').textContent = `${stats.min_elevation_m || 0}m - ${stats.max_elevation_m || 0}m`;
+    document.getElementById('valSlope').textContent = `${stats.avg_slope_deg || 0}° avg | TWI ${stats.avg_twi || 'N/A'}`;
+    document.getElementById('valCoverage').textContent = `${stats.map_width_meters || 0}m x ${stats.map_height_meters || 0}m | Buffer: ${stats.river_buffer_used_m || 0}m`;
+    document.getElementById('valContours').textContent = `${data.input_file_info ? data.input_file_info.contour_count : '2,711'} lines | ${stats.utm_projection || 'WGS84'}`;
+
+    // JSON Collapsible
+    document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);
+  }
+
+  // Switch Active Sub-Catchment Tab
+  function switchCandidate(rank) {
+    activeRank = rank;
+    const candidates = globalAnalysisData.all_candidate_sites || [];
+    const selected = candidates.find(c => c.rank === rank) || candidates[0];
+
+    // Update Tab UI
+    document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
+      if (idx + 1 === rank) {
+        btn.classList.add('active');
+      } else {
+        btn.classList.remove('active');
+      }
+    });
+
+    displayCandidateMetrics(selected);
+
+    // Pan Map to Selected Site
+    if (selected.pond_location) {
+      map.panTo([selected.pond_location.latitude, selected.pond_location.longitude]);
     }
   }
 
-  // Toggle JSON Response view
-  const toggleJson = document.getElementById('toggleJson');
-  const jsonBody = document.getElementById('jsonBody');
-  toggleJson.addEventListener('click', () => {
-    const isHidden = jsonBody.style.display === 'none';
-    jsonBody.style.display = isHidden ? 'block' : 'none';
-    toggleJson.querySelector('.toggle-icon').style.transform = isHidden ? 'rotate(180deg)' : 'rotate(0deg)';
+  function displayCandidateMetrics(cand) {
+    document.getElementById('selectedSiteTitle').innerHTML = `<i class="fa-solid fa-chart-pie"></i> Catchment #${cand.rank} Overview`;
+    document.getElementById('valAreaHa').textContent = `${cand.catchment_summary.area_hectares} ha`;
+    document.getElementById('valAreaM2').textContent = `${cand.catchment_summary.area_m2.toLocaleString()} m² / ${cand.catchment_summary.area_acres} acres`;
+
+    const loc = cand.pond_location;
+    document.getElementById('valPondCoords').textContent = `${loc.latitude}, ${loc.longitude}`;
+    const riverDistStr = loc.river_buffer_distance_m ? ` | River Dist: ${loc.river_buffer_distance_m}m` : '';
+    document.getElementById('valPondElev').textContent = `Elev: ${loc.elevation_m}m${riverDistStr}`;
+
+    const water = cand.water_harvesting_estimates;
+    document.getElementById('valRunoffM3').textContent = `${water.estimated_annual_runoff_m3.toLocaleString()} m³`;
+    document.getElementById('valRunoffLiters').textContent = `${(water.estimated_annual_runoff_liters / 1000000).toFixed(2)} Million Liters`;
+
+    document.getElementById('valPondCap').textContent = `${water.recommended_pond_capacity_m3.toLocaleString()} m³`;
+    document.getElementById('valPondDims').textContent = `${water.recommended_dimensions_m} (${water.recommended_pond_depth_m}m depth)`;
+  }
+
+  // ── Terrain Plots Modal ─────────────────────────────────────────────────
+  const plotsModal = document.getElementById('plotsModal');
+  const plotsLoading = document.getElementById('plotsLoading');
+  const plotsGrid = document.getElementById('plotsGrid');
+  const btnTerrain = document.getElementById('btnTerrainPlots');
+  const closePlots = document.getElementById('closePlots');
+
+  const PLOT_LABELS = {
+    '3d_elevation': { title: '3D Terrain Elevation Surface', icon: 'fa-mountain' },
+    'dem_heatmap': { title: 'DEM Heatmap + Candidate Sites', icon: 'fa-map' },
+    'slope_map': { title: 'Slope Map (Horn\'s 8-Neighbour)', icon: 'fa-angles-up' },
+    'flow_accumulation': { title: 'D8 Flow Accumulation (log scale)', icon: 'fa-water' },
+    'twi_map': { title: 'Topographic Wetness Index (TWI)', icon: 'fa-droplet' },
+    'depression_map': { title: 'Terrain Depression Depth (Sinks)', icon: 'fa-arrow-trend-down' },
+  };
+
+  if (btnTerrain) {
+    btnTerrain.addEventListener('click', async () => {
+      plotsModal.style.display = 'block';
+      plotsLoading.style.display = 'block';
+      plotsGrid.style.display = 'none';
+      plotsGrid.innerHTML = '';
+
+      try {
+        const res = await fetch('/api/plots');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Plot generation failed');
+
+        Object.entries(data.plots).forEach(([key, b64]) => {
+          const meta = PLOT_LABELS[key] || { title: key, icon: 'fa-image' };
+          const card = document.createElement('div');
+          card.style.cssText = 'background:#1e293b;border-radius:12px;overflow:hidden;border:1px solid #334155;';
+          card.innerHTML = `
+            <div style="padding:10px 14px;background:#0f172a;border-bottom:1px solid #334155;">
+              <h4 style="margin:0;color:#10B981;font-size:13px;font-family:Inter,sans-serif;">
+                <i class="fa-solid ${meta.icon}" style="margin-right:6px;"></i>${meta.title}
+              </h4>
+            </div>
+            <img src="data:image/png;base64,${b64}" style="width:100%;display:block;" alt="${meta.title}">
+          `;
+          plotsGrid.appendChild(card);
+        });
+
+        plotsGrid.style.cssText = 'display:grid;grid-template-columns:1fr 1fr;gap:14px;';
+        plotsLoading.style.display = 'none';
+        plotsGrid.style.display = 'grid';
+      } catch (err) {
+        plotsLoading.innerHTML = `<p style="color:#ef4444;"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</p>`;
+      }
+    });
+  }
+
+  if (closePlots) {
+    closePlots.addEventListener('click', () => { plotsModal.style.display = 'none'; });
+  }
+  plotsModal && plotsModal.addEventListener('click', (e) => {
+    if (e.target === plotsModal) plotsModal.style.display = 'none';
   });
+
+  // Collapsible JSON Toggle
+  const toggleJson = document.getElementById('toggleJson');
+  if (toggleJson) {
+    toggleJson.addEventListener('click', () => {
+      const jsonBody = document.getElementById('jsonBody');
+      if (jsonBody) {
+        const isHidden = jsonBody.style.display === 'none';
+        jsonBody.style.display = isHidden ? 'block' : 'none';
+      }
+    });
+  }
+
+  // ── Interactive 3D WebGL Terrain Renderer (Plotly.js) ───────────────────
+  const modal3D = document.getElementById('modal3D');
+  const btn3DTerrain = document.getElementById('btn3DTerrain');
+  const close3D = document.getElementById('close3D');
+  const btnReset3D = document.getElementById('btnReset3D');
+  const plotly3DLoading = document.getElementById('plotly3DLoading');
+  let plotly3DData = null;
+
+  if (btn3DTerrain) {
+    btn3DTerrain.addEventListener('click', async () => {
+      modal3D.style.display = 'block';
+      plotly3DLoading.style.display = 'flex';
+
+      try {
+        const res = await fetch('/api/terrain_3d_mesh');
+        const data = await res.json();
+        if (!data.success) throw new Error(data.error || 'Failed to fetch 3D mesh');
+
+        plotly3DData = data;
+        renderPlotly3DTerrain(data);
+        plotly3DLoading.style.display = 'none';
+      } catch (err) {
+        plotly3DLoading.innerHTML = `<p style="color:#ef4444;"><i class="fa-solid fa-circle-exclamation"></i> ${err.message}</p>`;
+      }
+    });
+  }
+
+  function renderPlotly3DTerrain(data) {
+    if (typeof Plotly === 'undefined') {
+      plotly3DLoading.innerHTML = `<p style="color:#ef4444;">Plotly library failed to load. Please check your internet connection.</p>`;
+      return;
+    }
+
+    const minElev = 260;
+    const maxElev = 300;
+    const zRange  = [250, 300];
+
+    // Vibrant topographical colormap:
+    // River channel (deep blue) -> Water edge (cyan) -> Farmland basin (emerald) -> Slopes (gold) -> Peaks (mountain brown)
+    const customTerrainColorscale = [
+      [0.00, '#0f172a'],
+      [0.15, '#1e3a8a'],
+      [0.30, '#0284c7'],
+      [0.48, '#10b981'],
+      [0.68, '#eab308'],
+      [0.85, '#d97706'],
+      [1.00, '#78350f']
+    ];
+
+    const surfaceTrace = {
+      type: 'surface',
+      x: data.x,
+      y: data.y,
+      z: data.z,
+      cmin: minElev,
+      cmax: maxElev,
+      colorscale: customTerrainColorscale,
+      contours: {
+        z: { show: true, usecolormap: true, highlightcolor: '#38bdf8', project: { z: true } }
+      },
+      colorbar: {
+        title: { text: `Elevation (m)<br><span style="font-size:11px;color:#94a3b8;">${minElev}m – ${maxElev}m</span>`, side: 'right' },
+        thickness: 18,
+        len: 0.85,
+        tickfont: { color: '#cbd5e1', size: 11 },
+        titlefont: { color: '#10B981', size: 13 }
+      },
+      lighting: {
+        ambient: 0.65,
+        diffuse: 0.8,
+        fresnel: 0.2,
+        specular: 0.5,
+        roughness: 0.4
+      }
+    };
+
+    const candX = data.candidates.map(c => c.longitude);
+    const candY = data.candidates.map(c => c.latitude);
+    const candZ = data.candidates.map(c => c.elevation_m + 2.0);
+    const candText = data.candidates.map(c => `${c.label}<br>Elev: ${c.elevation_m}m`);
+    const candColors = data.candidates.map(c => c.color);
+
+    const scatterTrace = {
+      type: 'scatter3d',
+      mode: 'markers+text',
+      x: candX,
+      y: candY,
+      z: candZ,
+      text: data.candidates.map(c => `Site #${c.rank}`),
+      textposition: 'top center',
+      textfont: { color: '#ffffff', size: 13, family: 'Inter', weight: 'bold' },
+      hoverinfo: 'text',
+      hovertext: candText,
+      marker: {
+        size: 10,
+        color: candColors,
+        symbol: 'diamond',
+        line: { color: '#ffffff', width: 2 }
+      }
+    };
+
+    const layout = {
+      margin: { l: 0, r: 0, b: 0, t: 0 },
+      paper_bgcolor: '#090d16',
+      plot_bgcolor: '#090d16',
+      scene: {
+        xaxis: { title: 'Longitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
+        yaxis: { title: 'Latitude', titlefont: { color: '#94a3b8' }, tickfont: { color: '#64748b' }, gridcolor: '#1e293b' },
+        zaxis: {
+          title: 'Elevation (m)',
+          titlefont: { color: '#10B981' },
+          tickfont: { color: '#64748b' },
+          gridcolor: '#1e293b',
+          range: zRange
+        },
+        camera: {
+          eye: { x: 1.55, y: -1.55, z: 0.95 }
+        }
+      }
+    };
+
+    const config = {
+      responsive: true,
+      displayModeBar: true,
+      modeBarButtonsToRemove: ['toImage'],
+      displaylogo: false
+    };
+
+    Plotly.newPlot('plotly3DContainer', [surfaceTrace, scatterTrace], layout, config);
+  }
+
+  if (btnReset3D) {
+    btnReset3D.addEventListener('click', () => {
+      if (plotly3DData) renderPlotly3DTerrain(plotly3DData);
+    });
+  }
+
+  if (close3D) {
+    close3D.addEventListener('click', () => { modal3D.style.display = 'none'; });
+  }
+  modal3D && modal3D.addEventListener('click', (e) => {
+    if (e.target === modal3D) modal3D.style.display = 'none';
+  });
+
 });
 EOF
 
