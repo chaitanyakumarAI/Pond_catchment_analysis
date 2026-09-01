@@ -194,7 +194,7 @@ def index():
     return render_template('index.html')
 
 if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5237))
+    port = int(os.environ.get('PORT', 5050))
     print(f"==================================================")
     print(f"  Pond Catchment Analysis API & Web Dashboard")
     print(f"  Listening on : http://localhost:{port}")
