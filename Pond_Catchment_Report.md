@@ -4,7 +4,7 @@
 **Assignment:** Automated Pond Catchment Analysis API & Web Interface  
 **Student Name:** Ranga Chandra Naga Venkata Chaitanya Kumar  
 **Roll Number:** 12341740  
-**GitHub Repository Link:** https://github.com/chaitanyakumar-CSD/Pond_catchment_analysis  
+**GitHub Repository Link:** https://github.com/chaitanyakumarAI/Pond_catchment_analysis.git  
 **Working API Route URL:** `http://localhost:5050/analyzeContour` (and `http://localhost:5050/findCatchment`)  
 **Interactive Dashboard Web URL:** `http://localhost:5050/`  
 

@@ -128,7 +128,7 @@ def create_report():
     add_heading_1("1. Student & Project Overview")
     add_body("Ranga Chandra Naga Venkata Chaitanya Kumar", "Student Name: ")
     add_body("12341740", "Roll Number: ")
-    add_body("https://github.com/chaitanyakumar-CSD/Pond_catchment_analysis", "GitHub Repository Link: ")
+    add_body("https://github.com/chaitanyakumarAI/Pond_catchment_analysis.git", "GitHub Repository Link: ")
     add_body("http://localhost:5050/analyzeContour (Public API / Local Server)", "Working API Route URL: ")
     add_body("http://localhost:5050/", "Interactive Dashboard Web URL: ")
 
