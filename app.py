@@ -57,12 +57,12 @@ def analyze_contour_route():
     Returns structured JSON with Pond Location, Catchment Area, Runoff Estimates, and GeoJSON layers.
     """
     try:
-        if 'file' not in request.files and 'contour_file' not in request.files:
+        if 'file' not in request.files and 'contour_map' not in request.files:
             return jsonify({
-                'error': 'No file uploaded. Please send a KML or KMZ file in form-data field "file" or "contour_file".'
+                'error': 'No file uploaded. Please send a KML or KMZ file in form-data field "file" or "contour_map".'
             }), 400
 
-        file_obj = request.files.get('file') or request.files.get('contour_file')
+        file_obj = request.files.get('file') or request.files.get('contour_map')
         if not file_obj or file_obj.filename == '':
             return jsonify({'error': 'Selected file is empty or missing filename.'}), 400
 
