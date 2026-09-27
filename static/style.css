@@ -421,3 +421,49 @@ body, html {
 @keyframes spin {
   to { transform: rotate(360deg); }
 }
+
+/* ── Phase 3: land-area selection & map overlays ───────────────────────── */
+.step-no {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 22px; height: 22px; border-radius: 50%; margin-right: 6px;
+  background: var(--primary); color: #0B0F19; font-size: 12px; font-weight: 800;
+}
+.draw-buttons { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+.draw-buttons .btn { margin: 0; padding: 10px 8px; font-size: 13px; }
+.area-readout {
+  margin-top: 12px; font-size: 12.5px; color: var(--text-muted);
+  background: rgba(255,255,255,0.04); border: 1px dashed rgba(250,204,21,0.45);
+  border-radius: 8px; padding: 8px 10px;
+}
+.area-readout b { color: var(--text-main); }
+.param-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; margin: 10px 0 12px; }
+.param-grid label { display: flex; flex-direction: column; gap: 4px; font-size: 11px; color: var(--text-muted); }
+.param-grid input {
+  background: #0B0F19; border: 1px solid var(--border-color); color: var(--text-main);
+  border-radius: 8px; padding: 8px; font-size: 13px; width: 100%;
+}
+.param-grid input:focus { outline: 1px solid var(--primary); }
+.metric-item.water { border-color: rgba(59,130,246,0.6) !important; background: rgba(37,99,235,0.14) !important; }
+.metric-item.water .metric-value { color: #93C5FD; }
+.site-note { font-size: 12px; color: #FACC15; margin: 6px 0; }
+.btn:disabled { opacity: 0.45; cursor: not-allowed; }
+
+.map-legend {
+  background: rgba(17,24,39,0.9); color: #E5E7EB; padding: 10px 12px; border-radius: 10px;
+  font-size: 12px; line-height: 1.7; border: 1px solid rgba(255,255,255,0.1);
+}
+.map-legend b { display: block; margin-bottom: 2px; }
+.map-legend .lg { display: inline-block; width: 16px; height: 10px; margin-right: 6px; vertical-align: middle; border-radius: 2px; }
+.lg-cov { border: 2px dashed #FACC15; }
+.lg-sel { border: 2px solid #FFFFFF; }
+.lg-cat { background: rgba(16,185,129,0.45); border: 2px solid #10B981; }
+.lg-pond { background: #2563EB; border: 2px solid #93C5FD; }
+.lg-site { background: #10B981; border: 2px solid #fff; border-radius: 50% !important; width: 10px !important; }
+
+.vol-label div {
+  background: rgba(11,15,25,0.88); color: #F9FAFB; border-left: 4px solid #10B981;
+  padding: 4px 8px; border-radius: 6px; font-size: 12px; white-space: nowrap;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.4);
+}
+.vol-label small { color: #9CA3AF; }
+.leaflet-draw-tooltip { font-size: 12px; }

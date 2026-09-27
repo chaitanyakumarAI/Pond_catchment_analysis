@@ -1,6 +1,7 @@
 """
-Pond Analysis Engine v5 — Bug-fixed + Visualization
-Critical fix: depression_depth = filled_dem - raw_dem (not gaussian - raw)
+Pond Analysis Engine v6 — adds user-selected land-area analysis
+(v5: bug-fixed + visualization;
+critical fix: depression_depth = filled_dem - raw_dem (not gaussian - raw)
 New: /api/plots returns base64 terrain images (3D elev, slope, TWI, flow)
 """
 import math, heapq, io, base64, os
@@ -111,15 +112,16 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
 
     # 1. 3D Elevation Surface (scaled strictly to 250m - 300m elevation axis)
     fig=plt.figure(figsize=(9,6)); ax=fig.add_subplot(111,projection='3d')
-    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',vmin=260.0,vmax=300.0,alpha=0.88,linewidth=0,antialiased=True)
-    ax.set_zlim(250.0, 300.0)
+    zlo,zhi=float(np.nanmin(dem_raw)),float(np.nanmax(dem_raw))
+    surf=ax.plot_surface(XX,YY,Z,cmap='terrain',vmin=zlo,vmax=zhi,alpha=0.88,linewidth=0,antialiased=True)
+    ax.set_zlim(zlo-max(2.0,0.25*(zhi-zlo)), zhi+2.0)
     # Mark pond sites
     for cand in candidates:
         lo,la=cand['pond_location']['longitude'],cand['pond_location']['latitude']
         el=cand['pond_location']['elevation_m']
         ax.scatter([lo],[la],[el+2],color=cand['color'],s=60,zorder=5)
     fig.colorbar(surf,ax=ax,shrink=0.4,label='Elevation (m)')
-    ax.set_title('3D Terrain Elevation (250m - 300m) + Pond Sites',fontsize=12,fontweight='bold')
+    ax.set_title(f'3D Terrain Elevation ({zlo:.0f}m - {zhi:.0f}m) + Pond Sites',fontsize=12,fontweight='bold')
     ax.set_xlabel('Longitude'); ax.set_ylabel('Latitude'); ax.set_zlabel('Elev (m)')
     ax.view_init(elev=35,azim=-60)
     fig.tight_layout(); plots['3d_elevation']=_b64(fig, '3d_elevation')
@@ -189,22 +191,55 @@ def generate_plots(dem_raw, dem_filled, slope, flow_acc, twi, grid_x, grid_y,
     return plots
 
 # ── main analysis ─────────────────────────────────────────────────────────────
+#
+# Two-stage design (Phase 3):
+#   Stage A  build_terrain_model(parsed)   — DEM, sink fill, slope, D8, TWI, PSI.
+#            Depends only on the contour map, so it is computed ONCE per dataset
+#            and cached (≈0.6 s for the sample map).
+#   Stage B  select_sites(model, polygon)  — restricts pond candidates to the land
+#            area the user drew on the map, delineates their catchments on the
+#            full terrain and estimates water volume. Takes a few milliseconds.
+# analyze_terrain_and_catchment() keeps the Phase-1 signature and runs A+B.
 
-def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
+class AreaSelectionError(ValueError):
+    """Raised when a user-selected land area cannot be analysed (no data, too small, too big)."""
+    def __init__(self, message, extra=None):
+        super().__init__(message)
+        self.extra = extra or {}
+
+
+# Engineering limits (documented in the report — "system limitations")
+MIN_AREA_M2 = 5_000          # 0.5 ha  — below this a farm pond is not meaningful
+MAX_AREA_M2 = 50_000_000     # 50 km²  — upper bound for one request
+MIN_COVERAGE = 0.60          # ≥60 % of the drawn area must be covered by contour data
+MAX_POLY_VERTICES = 500
+MAX_GRID_POINTS = 12000      # contour vertices used for interpolation (sub-sampled above this)
+
+
+def _robust_elevation_filter(elevs):
+    """Drop spike/noise vertices (e.g. the stray 30 m points in the sample map)
+    using a percentile window instead of fixed elevation constants."""
+    lo, hi = np.percentile(elevs, [0.5, 99.5])
+    pad = max(0.5 * (hi - lo), 2.0)
+    return (elevs >= lo - pad) & (elevs <= hi + pad)
+
+
+def build_terrain_model(parsed_kml_data):
+    """Stage A — dataset-level terrain & hydrology model (cacheable)."""
+    import time as _time
+    t0 = _time.perf_counter()
     pts=parsed_kml_data['points']; bbox=parsed_kml_data['bbox']
     lons,lats,elevs=pts[:,0].copy(),pts[:,1].copy(),pts[:,2].copy()
-    # Filter elevation noise <250m and >400m
-    ok=(elevs>=250.0)&(elevs<=400.0)
-    if not ok.any(): ok=(elevs>0)&(elevs<9000)
+    ok=_robust_elevation_filter(elevs)
     lons,lats,elevs=lons[ok],lats[ok],elevs[ok]
-    if len(lons)>12000:
-        s=len(lons)//12000; lons,lats,elevs=lons[::s],lats[::s],elevs[::s]
+    if len(lons)>MAX_GRID_POINTS:
+        s=len(lons)//MAX_GRID_POINTS; lons,lats,elevs=lons[::s],lats[::s],elevs[::s]
 
     cx0=(bbox['min_lon']+bbox['max_lon'])/2; cy0=(bbox['min_lat']+bbox['max_lat'])/2
     epsg=_utm_epsg(cx0,cy0)
     t2u=Transformer.from_crs("EPSG:4326",epsg,always_xy=True)
     t2w=Transformer.from_crs(epsg,"EPSG:4326",always_xy=True)
-    xs,ys=t2u.transform(lons,lats)
+    xs,ys=t2u.transform(lons,lats); xs=np.asarray(xs); ys=np.asarray(ys)
     xmin,xmax,ymin,ymax=xs.min(),xs.max(),ys.min(),ys.max()
     wm,hm=xmax-xmin,ymax-ymin
 
@@ -216,54 +251,128 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
     dl=griddata(src,elevs,q,method='linear').reshape(nr2,nc2)
     dn=griddata(src,elevs,q,method='nearest').reshape(nr2,nc2)
     raw_interp=np.where(np.isnan(dl),dn,dl)
-    # Clip DEM raw to minimum 255.0m to remove boundary extrapolation noise
-    dem_raw=np.clip(gaussian_filter(raw_interp,sigma=1.0),255.0,310.0)
+    has_data=~np.isnan(dl)                       # inside the convex hull of the contours
+    dem_raw=np.clip(gaussian_filter(raw_interp,sigma=1.0),float(elevs.min())-1.0,float(elevs.max())+1.0)
 
-    # ── CRITICAL FIX: fill AFTER saving raw ──────────────────────────────────
     dem_filled=_priority_flood(dem_raw)
-    # True depression depth = how much was filled = filled - raw (positive = sink)
-    depression_depth=dem_filled-dem_raw  # ← correct definition
-
+    depression_depth=dem_filled-dem_raw           # true sink depth
     slope=_horn_slope(dem_filled,cx,cy)
-
-    # D8 on FILLED dem (hydrologically correct)
     fa,fdr,fdc,ht=_d8(dem_filled)
 
-    # upstream map
     umap={}
     ri,ci=np.where(ht)
     for r,c in zip(ri.tolist(),ci.tolist()):
         R2,C2=r+int(fdr[r,c]),c+int(fdc[r,c])
         if 0<=R2<nr2 and 0<=C2<nc2: umap.setdefault((R2,C2),[]).append((r,c))
 
-    # River Corridor Identification: top 5% FA OR lowest 18% elevation flat valley trough
+    # River corridor: top 5 % flow accumulation OR low flat valley trough
     river_thresh = np.percentile(fa, 95)
     elev_river_thresh = np.percentile(dem_raw, 18)
     is_river = (fa >= river_thresh) | ((dem_raw <= elev_river_thresh) & (slope < 3.0))
     dist_r = distance_transform_edt(~is_river) * ((cx + cy) / 2)
-    # Enforce minimum 120m river buffer
     buf = max(120.0, dist_r.max() * 0.25)
 
-    # TWI
     sr=np.radians(np.clip(slope,0.1,89)); spa=np.maximum(fa*cx,1.0)
     twi=np.clip(np.log(spa/(np.tan(sr)+1e-6)),0,None)
     twi_n=(twi-twi.min())/max(twi.max()-twi.min(),1e-6)
 
-    # PSI
     fl=np.log1p(fa); fl_n=(fl-fl.min())/max(fl.max()-fl.min(),1e-6)
-    sg=np.where(slope>8,0,np.exp(-((slope-2.5)**2)/(2*2**2)))
     mz,Mz=dem_filled.min(),dem_filled.max()
     zn=(dem_filled-mz)/max(Mz-mz,1)
-    # depression norm — key fix: use correct depression_depth
     dep_n=np.clip(depression_depth/max(float(np.percentile(depression_depth[depression_depth>0],75)) if (depression_depth>0).any() else 1,1e-6),0,1)
+    psi_raw=0.35*dep_n+0.30*fl_n+0.20*twi_n+0.15*(1-zn)      # Pond Suitability Index
+    base_valid=(slope>=0.3)&(slope<8)&(depression_depth>0.001)
 
-    valid=(dist_r>=buf)&(slope>=0.3)&(slope<8)&(depression_depth>0.001)
-    psi=np.where(valid,0.35*dep_n+0.30*fl_n+0.20*twi_n+0.15*(1-zn),0.0)
-    b=5; psi[:b,:]=psi[-b:,:]=psi[:,:b]=psi[:,-b:]=0
+    border=np.ones((nr2,nc2),bool); b=5
+    border[:b,:]=border[-b:,:]=border[:,:b]=border[:,-b:]=False
+
+    # data-coverage footprint (for the map + selection validation)
+    from shapely.geometry import MultiPoint
+    stride=max(1,len(xs)//20000)
+    hull=MultiPoint(list(zip(xs[::stride],ys[::stride]))).convex_hull
+    hull_wgs=[[round(v,6) for v in t2w.transform(x,y)] for x,y in hull.exterior.coords]
+
+    gx_wgs=np.array([t2w.transform(float(gx[c]),float(gy[nr2//2]))[0] for c in range(nc2)])
+    gy_wgs=np.array([t2w.transform(float(gx[nc2//2]),float(gy[r]))[1] for r in range(nr2)])
+
+    return dict(epsg=epsg,t2u=t2u,t2w=t2w,gx=gx,gy=gy,q=q,nr=nr2,nc=nc2,cx=cx,cy=cy,ca=ca,wm=wm,hm=hm,
+                dem_raw=dem_raw,dem_filled=dem_filled,depression_depth=depression_depth,slope=slope,
+                fa=fa,umap=umap,is_river=is_river,dist_r=dist_r,buf=buf,twi=twi,psi_raw=psi_raw,
+                base_valid=base_valid,border=border,has_data=has_data,hull=hull,hull_wgs=hull_wgs,
+                mz=float(mz),Mz=float(Mz),gx_wgs=gx_wgs,gy_wgs=gy_wgs,
+                build_ms=round((_time.perf_counter()-t0)*1000,1))
+
+
+def _selection_mask(model, area_polygon):
+    """Rasterise the user polygon onto the model grid. Returns (mask, info, clipped_poly_utm)."""
+    from shapely.geometry import Polygon
+    from matplotlib.path import Path as _MPath
+    if len(area_polygon) < 3 or len(area_polygon) > MAX_POLY_VERTICES:
+        raise AreaSelectionError(f"Selected area must have 3–{MAX_POLY_VERTICES} vertices.")
+    apoly=np.asarray(area_polygon,dtype=float)
+    if apoly.ndim!=2 or apoly.shape[1]<2 or not np.isfinite(apoly).all():
+        raise AreaSelectionError("Polygon must be a list of [longitude, latitude] pairs.")
+    px,py=model['t2u'].transform(apoly[:,0],apoly[:,1])
+    poly=Polygon(list(zip(px,py)))
+    if not poly.is_valid: poly=poly.buffer(0)
+    area=float(poly.area)
+    if area < MIN_AREA_M2:
+        raise AreaSelectionError(f"Selected area is {area/10000:.2f} ha — please select at least {MIN_AREA_M2/10000:.1f} ha.")
+    if area > MAX_AREA_M2:
+        raise AreaSelectionError(f"Selected area is {area/1e6:.1f} km² — the limit is {MAX_AREA_M2/1e6:.0f} km² per request.")
+    inter=poly.intersection(model['hull'])
+    coverage=100.0*(inter.area/area if area>0 else 0)
+    if inter.is_empty or coverage < MIN_COVERAGE*100:
+        raise AreaSelectionError(
+            f"Only {coverage:.0f}% of the selected area has contour data (need ≥{MIN_COVERAGE*100:.0f}%). "
+            "Draw the area inside the dashed data-coverage boundary, or upload a contour map for that region.",
+            {'coverage_pct':round(coverage,1)})
+    if inter.geom_type!='Polygon':
+        inter=max(getattr(inter,'geoms',[inter]),key=lambda g:g.area)
+    mask=_MPath(np.asarray(inter.exterior.coords)).contains_points(model['q']).reshape(model['nr'],model['nc'])
+    if mask.sum() < 4:
+        raise AreaSelectionError("Selected area is smaller than the terrain grid resolution "
+                                 f"({model['cx']:.0f} m cells). Please draw a larger area.")
+    info={'area_m2':round(area,1),'area_hectares':round(area/10000,2),
+          'analysed_area_m2':round(float(inter.area),1),'data_coverage_pct':round(coverage,1),
+          'grid_cells':int(mask.sum())}
+    return mask, info, inter
+
+
+def select_sites(model, area_polygon=None, max_candidate_ponds=4,
+                 rainfall_mm=850.0, runoff_coeff=0.35, pond_depth_m=3.5):
+    """Stage B — pond siting, catchment delineation and water-volume estimation
+    inside the selected land area (whole map when area_polygon is None)."""
+    import time as _time
+    t0=_time.perf_counter()
+    rainfall_mm=float(rainfall_mm); runoff_coeff=float(runoff_coeff); pond_depth_m=float(pond_depth_m)
+    M=model; nr2,nc2=M['nr'],M['nc']; cx,cy,ca=M['cx'],M['cy'],M['ca']
+    gx,gy,t2w=M['gx'],M['gy'],M['t2w']
+    dem_filled,depression_depth,slope,twi=M['dem_filled'],M['depression_depth'],M['slope'],M['twi']
+    is_river,dist_r,umap=M['is_river'],M['dist_r'],M['umap']
+
+    sel_info=None; sel_poly=None
+    if area_polygon:
+        inside,sel_info,sel_poly=_selection_mask(M,area_polygon)
+        zone=inside&M['border']
+        if zone.sum()==0: zone=inside.copy()
+    else:
+        inside=np.ones((nr2,nc2),bool); zone=M['border']
+
+    # River buffer ≥120 m; relaxed step-wise only when a small parcel has no site otherwise
+    buf=M['buf']
+    for cand_buf in [buf,90.0,60.0,30.0,0.0]:
+        valid=(dist_r>=cand_buf)&M['base_valid']&zone
+        if valid.sum()>=20 or cand_buf==0.0:
+            buf=cand_buf; break
+    psi=np.where(valid,M['psi_raw'],0.0)
 
     lmx=maximum_filter(psi,size=16)
     peaks=sorted(np.argwhere((psi==lmx)&(psi>0.01)),key=lambda rc:psi[rc[0],rc[1]],reverse=True)
-    sep=max(12,int(350/((cx+cy)/2))); mc=max(5,int(10000/ca))
+    sep=max(12,int(350/((cx+cy)/2)))
+    mc=max(5,int(10000/ca))                                   # ≥1 ha catchment
+    if area_polygon:
+        mc=max(3,min(mc,int(0.5*inside.sum())))
     sel=[]
     for r,c in peaks:
         t=set(); stk=[(int(r),int(c))]
@@ -274,9 +383,14 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         if len(t)<mc: continue
         if all((r-pr)**2+(c-pc)**2>=sep**2 for pr,pc in sel): sel.append((r,c))
         if len(sel)>=max_candidate_ponds: break
+    fallback=False
     if not sel:
-        m=np.where(valid,dem_filled,np.inf); m[:b,:]=m[-b:,:]=m[:,:b]=m[:,-b:]=np.inf
-        br,bc=np.unravel_index(np.argmin(m if np.isfinite(m).any() else dem_filled),dem_filled.shape)
+        fallback=True
+        pool=valid if valid.any() else zone
+        # prefer the cell with the largest upstream area among the lowest-risk cells
+        score=np.where(pool&~is_river,np.log1p(M['fa'])+M['psi_raw'],-np.inf)
+        if not np.isfinite(score).any(): score=np.where(inside,-dem_filled,-np.inf)
+        br,bc=np.unravel_index(np.argmax(score),dem_filled.shape)
         sel=[(int(br),int(bc))]
 
     cands=[]; geo=[]
@@ -284,13 +398,13 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
         cat=set(); stk=[(int(pr),int(pc))]
         while stk:
             cell=stk.pop()
-            if cell not in cat and not is_river[cell[0],cell[1]]:
+            if cell not in cat and (not is_river[cell[0],cell[1]] or cell==(int(pr),int(pc))):
                 cat.add(cell); stk.extend(umap.get(cell,[]))
         am2=len(cat)*ca; aha=am2/10000; aac=am2/4046.86
+        in_parcel=sum(1 for r,c in cat if inside[r,c])*ca
         bnd=_shapely_poly(cat,gx,gy,cx,cy,t2w)
-        rf=0.85; rc2=0.35; rm3=am2*rf*rc2
-        cap=min(rm3*0.18,25000); surf=cap/3.5; side=math.sqrt(max(surf,1))
-        # stage-storage
+        rf=rainfall_mm/1000.0; rc2=runoff_coeff; rm3=am2*rf*rc2          # Q = C·P·A
+        cap=min(rm3*0.18,25000); surf=cap/pond_depth_m; side=math.sqrt(max(surf,1))
         base_e=float(dem_filled[pr,pc])
         els=[float(dem_filled[r,c]) for r,c in cat]
         curve=[]
@@ -299,72 +413,99 @@ def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4):
             curve.append({'depth_m':d,'surface_elev_m':round(we,2),
                          'area_m2':round(fl2*ca,1),'volume_m3':round(sum((we-e)*ca for e in els if e<=we),1)})
         col=COLORS[(rank-1)%len(COLORS)]
-        plo,pla=t2w.transform(float(gx[pc]),float(gy[pr]))
+        px_u,py_u=float(gx[pc]),float(gy[pr])
+        plo,pla=t2w.transform(px_u,py_u)
+        h=side/2   # pond footprint (square sized from the recommended capacity) for the map overlay
+        foot=[[round(v,7) for v in t2w.transform(px_u+dx,py_u+dy)] for dx,dy in [(-h,-h),(h,-h),(h,h),(-h,h),(-h,-h)]]
+        wh={'assumed_annual_rainfall_mm':rainfall_mm,
+            'runoff_coefficient_C':rc2,
+            'estimated_annual_runoff_m3':round(rm3,2),
+            'estimated_annual_runoff_liters':round(rm3*1000,0),
+            'expected_water_volume_m3':round(rm3,2),
+            'recommended_pond_capacity_m3':round(cap,2),
+            'recommended_pond_depth_m':pond_depth_m,
+            'recommended_pond_surface_area_m2':round(surf,2),
+            'recommended_dimensions_m':f"{round(side,1)}m x {round(side,1)}m"}
+        loc={'latitude':round(pla,6),'longitude':round(plo,6),
+             'elevation_m':round(float(dem_filled[pr,pc]),2),
+             'river_buffer_distance_m':round(float(dist_r[pr,pc]),1),
+             'depression_depth_m':round(float(depression_depth[pr,pc]),3),
+             'twi':round(float(twi[pr,pc]),2),
+             'suitability_score_pct':round(float(M['psi_raw'][pr,pc] if fallback else psi[pr,pc])*100,1),
+             'terrain_slope_deg':round(float(slope[pr,pc]),2)}
         c_obj={'rank':rank,'is_primary':rank==1,'color':col,
-               'pond_location':{'latitude':round(pla,6),'longitude':round(plo,6),
-                                'elevation_m':round(float(dem_filled[pr,pc]),2),
-                                'river_buffer_distance_m':round(float(dist_r[pr,pc]),1),
-                                'depression_depth_m':round(float(depression_depth[pr,pc]),3),
-                                'twi':round(float(twi[pr,pc]),2),
-                                'suitability_score_pct':round(float(psi[pr,pc])*100,1),
-                                'terrain_slope_deg':round(float(slope[pr,pc]),2)},
+               'pond_location':loc,
                'catchment_summary':{'area_m2':round(am2,2),'area_hectares':round(aha,2),
-                                    'area_acres':round(aac,2),'contributing_cells':len(cat)},
-               'water_harvesting':{'rainfall_mm':850,'runoff_coeff':rc2,
+                                    'area_acres':round(aac,2),'contributing_cells':len(cat),
+                                    'area_inside_selected_land_m2':round(in_parcel,1)},
+               'water_harvesting':{'rainfall_mm':rainfall_mm,'runoff_coeff':rc2,
                                    'annual_runoff_m3':round(rm3,2),
                                    'annual_runoff_liters':round(rm3*1000,0),
                                    'pond_capacity_m3':round(cap,2),
-                                   'pond_depth_m':3.5,
+                                   'pond_depth_m':pond_depth_m,
                                    'pond_surface_m2':round(surf,2),
                                    'dimensions':f"{round(side,1)}m x {round(side,1)}m"},
                'stage_storage':curve,
-               'water_harvesting_estimates':{'assumed_annual_rainfall_mm':850,
-                                             'runoff_coefficient_C':rc2,
-                                             'estimated_annual_runoff_m3':round(rm3,2),
-                                             'estimated_annual_runoff_liters':round(rm3*1000,0),
-                                             'recommended_pond_capacity_m3':round(cap,2),
-                                             'recommended_pond_depth_m':3.5,
-                                             'recommended_pond_surface_area_m2':round(surf,2),
-                                             'recommended_dimensions_m':f"{round(side,1)}m x {round(side,1)}m"}}
+               'pond_footprint':foot,
+               'water_harvesting_estimates':wh}
         cands.append(c_obj)
         geo.append({'type':'Feature','geometry':{'type':'Point','coordinates':[round(plo,6),round(pla,6)]},
-                    'properties':{'rank':rank,'name':f"Farm Pond #{rank}",'elevation_m':round(float(dem_filled[pr,pc]),2),
-                                  'river_distance_m':round(float(dist_r[pr,pc]),1),
-                                  'depression_depth_m':round(float(depression_depth[pr,pc]),3),
-                                  'twi':round(float(twi[pr,pc]),2),
-                                  'suitability_score':round(float(psi[pr,pc])*100,1),
-                                  'area_ha':round(aha,2),'color':col}})
+                    'properties':{'rank':rank,'kind':'pond_site','name':f"Farm Pond #{rank}",'elevation_m':loc['elevation_m'],
+                                  'river_distance_m':loc['river_buffer_distance_m'],
+                                  'depression_depth_m':loc['depression_depth_m'],'twi':loc['twi'],
+                                  'suitability_score':loc['suitability_score_pct'],
+                                  'area_ha':round(aha,2),'water_volume_m3':round(rm3,1),
+                                  'pond_capacity_m3':round(cap,1),'color':col}})
         if bnd:
             geo.append({'type':'Feature','geometry':{'type':'Polygon','coordinates':[bnd]},
-                        'properties':{'rank':rank,'name':f"Basin #{rank}",'area_ha':round(aha,2),'color':col}})
+                        'properties':{'rank':rank,'kind':'catchment','name':f"Basin #{rank}",'area_ha':round(aha,2),
+                                      'water_volume_m3':round(rm3,1),'color':col}})
+        geo.append({'type':'Feature','geometry':{'type':'Polygon','coordinates':[foot]},
+                    'properties':{'rank':rank,'kind':'pond_footprint','name':f"Pond #{rank} footprint",
+                                  'pond_capacity_m3':round(cap,1),'dimensions':wh['recommended_dimensions_m'],
+                                  'depth_m':pond_depth_m,'color':'#2563EB'}})
 
-    # Convert WGS84 coords for plots
-    lo_arr=np.array([t2w.transform(float(gx[c]),float(gy[r]))[0] for r in range(nr2) for c in range(nc2)]).reshape(nr2,nc2)
-    la_arr=np.array([t2w.transform(float(gx[c]),float(gy[r]))[1] for r in range(nr2) for c in range(nc2)]).reshape(nr2,nc2)
-    # Use center column/row lon/lat for extent
-    gx_wgs=np.array([t2w.transform(float(gx[c]),float(gy[nr2//2]))[0] for c in range(nc2)])
-    gy_wgs=np.array([t2w.transform(float(gx[nc2//2]),float(gy[r]))[1] for r in range(nr2)])
+    if sel_poly is not None:
+        ring=[[round(v,7) for v in t2w.transform(x,y)] for x,y in sel_poly.exterior.coords]
+        sel_info['polygon']=ring
+        geo.append({'type':'Feature','geometry':{'type':'Polygon','coordinates':[ring]},
+                    'properties':{'kind':'selected_area','name':'Selected land area',
+                                  'area_ha':sel_info['area_hectares'],'color':'#FFFFFF'}})
 
     p=cands[0]
+    ins=inside if area_polygon else np.ones_like(inside)
     return {
         'pond_location':p['pond_location'],
         'catchment_summary':p['catchment_summary'],
         'water_harvesting_estimates':p['water_harvesting_estimates'],
+        'expected_water_volume_m3':p['water_harvesting_estimates']['expected_water_volume_m3'],
+        'total_expected_water_volume_all_sites_m3':round(sum(c['water_harvesting_estimates']['expected_water_volume_m3'] for c in cands),2),
         'stage_storage':p['stage_storage'],
         'total_catchments_detected':len(cands),
         'all_candidate_sites':cands,
-        'terrain_statistics':{'min_elevation_m':round(float(mz),2),'max_elevation_m':round(float(Mz),2),
-                               'elevation_range_m':round(float(Mz-mz),2),
-                               'avg_slope_deg':round(float(slope.mean()),2),
-                               'avg_twi':round(float(twi.mean()),2),
-                               'utm_projection':epsg,'river_buffer_used_m':round(buf,1),
-                               'map_width_meters':round(wm,1),'map_height_meters':round(hm,1),
+        'selected_area':sel_info,
+        'site_selection_note':('No site met all suitability rules inside the selected area; '
+                               'the best-drained non-river cell was chosen instead.') if fallback else None,
+        'terrain_statistics':{'min_elevation_m':round(float(dem_filled[ins].min()),2),
+                               'max_elevation_m':round(float(dem_filled[ins].max()),2),
+                               'elevation_range_m':round(float(dem_filled[ins].max()-dem_filled[ins].min()),2),
+                               'avg_slope_deg':round(float(slope[ins].mean()),2),
+                               'avg_twi':round(float(twi[ins].mean()),2),
+                               'utm_projection':M['epsg'],'river_buffer_used_m':round(buf,1),
+                               'map_width_meters':round(M['wm'],1),'map_height_meters':round(M['hm'],1),
                                'grid_resolution':f"{nc2} x {nr2}",'cell_size_m':round((cx+cy)/2,1)},
         'geojson_layers':{'type':'FeatureCollection','features':geo},
-        # store for plot generation
-        '_dem_raw':dem_raw,'_dem_filled':dem_filled,'_slope':slope,
-        '_flow_acc':fa,'_twi':twi,'_gx_wgs':gx_wgs,'_gy_wgs':gy_wgs,
+        'timing_ms':{'terrain_model_build':M['build_ms'],'site_selection':round((_time.perf_counter()-t0)*1000,1)},
+        '_dem_raw':M['dem_raw'],'_dem_filled':dem_filled,'_slope':slope,
+        '_flow_acc':M['fa'],'_twi':twi,'_gx_wgs':M['gx_wgs'],'_gy_wgs':M['gy_wgs'],
     }
+
+
+def analyze_terrain_and_catchment(parsed_kml_data, max_candidate_ponds=4, area_polygon=None,
+                                  rainfall_mm=850.0, runoff_coeff=0.35, pond_depth_m=3.5):
+    """Phase-1 compatible one-shot call (Stage A + Stage B)."""
+    model=build_terrain_model(parsed_kml_data)
+    return select_sites(model, area_polygon, max_candidate_ponds, rainfall_mm, runoff_coeff, pond_depth_m)
 
 
 if __name__=='__main__':

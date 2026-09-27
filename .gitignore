@@ -5,12 +5,15 @@ __pycache__/
 
 # Generated outputs
 outputs/
+results/*_u*.csv
 *.log
 server.log
+
+# Build artefacts (rebuild with: cd cluster && GOOS=linux GOARCH=amd64 go build -o pond_lb .)
+cluster/pond_lb
 
 # Internal tooling (keep locally, not on GitHub)
 generate_report_doc.py
 create_ssh_bundle.py
 setup_pond_catchment.sh
 *.docx
-*.sh

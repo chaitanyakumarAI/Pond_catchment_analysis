@@ -1,0 +1,7 @@
+target,users,requests,failures,error_pct,throughput_rps,p50_ms,p95_ms,p99_ms,area_p50_ms,area_p95_ms
+4 workers via LB (2-core VM),10,244,0,0.0,8.4,13.0,32.0,46.0,15.0,29.0
+4 workers via LB (2-core VM),50,1192,0,0.0,41.08,14.0,37.0,57.0,17.0,40.0
+4 workers via LB (2-core VM),150,3516,0,0.0,120.99,25.0,100.0,220.0,33.0,110.0
+1 worker direct,10,239,0,0.0,8.23,14.0,34.0,42.0,16.0,36.0
+1 worker direct,50,1171,0,0.0,40.42,15.0,60.0,120.0,20.0,66.0
+1 worker direct,150,2932,0,0.0,101.05,260.0,550.0,680.0,270.0,560.0

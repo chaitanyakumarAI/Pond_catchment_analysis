@@ -3,54 +3,91 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>AquaTerrain AI - Multi-Catchment &amp; Pond Analysis</title>
+  <title>AquaTerrain AI - Pond Site &amp; Catchment Planner</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Outfit:wght@500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet/leaflet.css" />
+  <link rel="stylesheet" href="/static/vendor/leaflet-draw/leaflet.draw.css" />
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
   <link rel="stylesheet" href="/static/style.css">
-  <script src="https://cdn.plot.ly/plotly-2.27.0.min.js"></script>
+  <script defer src="/static/vendor/plotly.min.js"></script>
 </head>
 <body>
   <div class="app-container">
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-icon"><i class="fa-solid fa-water"></i></div>
-        <div><h2>AquaTerrain AI</h2><p>Multi-Catchment Pond Engine v5</p></div>
+        <div><h2>AquaTerrain AI</h2><p>Pond Site &amp; Catchment Planner v6</p></div>
+      </div>
+
+      <div class="card select-card">
+        <h3><span class="step-no">1</span> Select your land area</h3>
+        <p class="subtitle">Draw the land parcel on the map. Pond sites, catchments and water volume are computed only for that area.</p>
+        <div class="draw-buttons">
+          <button class="btn btn-primary" id="btnDrawRect"><i class="fa-regular fa-square"></i> Rectangle</button>
+          <button class="btn btn-primary" id="btnDrawPoly"><i class="fa-solid fa-draw-polygon"></i> Polygon</button>
+        </div>
+        <div class="draw-buttons">
+          <button class="btn btn-outline" id="btnWholeMap"><i class="fa-solid fa-expand"></i> Whole map</button>
+          <button class="btn btn-outline" id="btnClearArea"><i class="fa-solid fa-eraser"></i> Clear</button>
+        </div>
+        <div class="area-readout" id="areaReadout">No area selected — draw inside the dashed <b>data coverage</b> boundary.</div>
+      </div>
+
+      <div class="card params-card">
+        <h3><span class="step-no">2</span> Rainfall &amp; pond parameters</h3>
+        <div class="param-grid">
+          <label>Annual rainfall (mm)<input type="number" id="inRain" value="850" min="100" max="5000" step="10"></label>
+          <label>Runoff coefficient C<input type="number" id="inCoeff" value="0.35" min="0.05" max="0.95" step="0.05"></label>
+          <label>Pond depth (m)<input type="number" id="inDepth" value="3.5" min="1" max="10" step="0.5"></label>
+        </div>
+        <button class="btn btn-primary" id="btnAnalyzeArea" disabled>
+          <i class="fa-solid fa-microchip"></i> Analyse selected area
+        </button>
       </div>
 
       <div class="card upload-card">
-        <h3><i class="fa-solid fa-cloud-arrow-up"></i> Upload Contour Map</h3>
-        <p class="subtitle">Upload KML/KMZ to discover candidate pond locations &amp; estimate multi-basin catchments.</p>
-        <form id="uploadForm" enctype="multipart/form-data">
-          <div class="drop-zone" id="dropZone">
-            <i class="fa-solid fa-map-location-dot drop-icon"></i>
-            <span class="drop-text">Drag &amp; drop <b>.KML</b> or <b>.KMZ</b> file here</span>
-            <span class="drop-subtext">or click to browse files</span>
-            <input type="file" id="fileInput" name="file" accept=".kml,.kmz" hidden>
-          </div>
-          <div class="file-name-display" id="fileNameDisplay"></div>
-          <button type="submit" class="btn btn-primary" id="btnAnalyze" disabled>
-            <i class="fa-solid fa-microchip"></i> Analyze Multi-Catchments
+        <div class="json-header" id="toggleUpload">
+          <h3><i class="fa-solid fa-database"></i> Contour data: <span id="datasetName">contours_1m.kml (sample)</span></h3>
+          <i class="fa-solid fa-chevron-down toggle-icon"></i>
+        </div>
+        <div id="uploadBody" style="display:none;margin-top:12px;">
+          <p class="subtitle">Optional: use your own KML/KMZ contour map, then draw the land area on it.</p>
+          <form id="uploadForm" enctype="multipart/form-data">
+            <div class="drop-zone" id="dropZone">
+              <i class="fa-solid fa-map-location-dot drop-icon"></i>
+              <span class="drop-text">Drag &amp; drop <b>.KML</b> or <b>.KMZ</b> file here</span>
+              <span class="drop-subtext">or click to browse files</span>
+              <input type="file" id="fileInput" name="file" accept=".kml,.kmz" hidden>
+            </div>
+            <div class="file-name-display" id="fileNameDisplay"></div>
+            <button type="submit" class="btn btn-outline" id="btnAnalyze" disabled>
+              <i class="fa-solid fa-upload"></i> Use this file &amp; analyse whole map
+            </button>
+          </form>
+          <button class="btn btn-outline" id="btnUseSample" style="margin-top:8px;">
+            <i class="fa-solid fa-flask"></i> Back to sample map (contours_1m.kml)
           </button>
-        </form>
-        <div class="divider"><span>OR DEMO</span></div>
-        <button class="btn btn-outline" id="btnSample">
-          <i class="fa-solid fa-flask"></i> Run Sample Map (contours_1m.kml)
-        </button>
+        </div>
       </div>
 
       <div class="results-container" id="resultsContainer" style="display:none;">
         <div class="card tabs-card">
-          <h3><i class="fa-solid fa-layer-group"></i> Detected Sub-Catchments</h3>
+          <h3><i class="fa-solid fa-layer-group"></i> Pond sites in selected area</h3>
+          <div class="site-note" id="siteNote" style="display:none;"></div>
           <div class="candidate-tabs" id="candidateTabs"></div>
         </div>
 
         <div class="card metrics-card">
           <h3 id="selectedSiteTitle"><i class="fa-solid fa-chart-pie"></i> Catchment Overview</h3>
           <div class="metrics-grid">
-            <div class="metric-item highlight">
+            <div class="metric-item highlight water">
+              <span class="metric-label">Expected Water Volume / yr</span>
+              <span class="metric-value" id="valVolume">0 m³</span>
+              <span class="metric-sub" id="valVolumeSub">Q = C × P × A</span>
+            </div>
+            <div class="metric-item">
               <span class="metric-label">Catchment Area</span>
               <span class="metric-value" id="valAreaHa">0 ha</span>
               <span class="metric-sub" id="valAreaM2">0 m² / 0 acres</span>
@@ -61,9 +98,9 @@
               <span class="metric-sub" id="valPondElev">Elev: 0m</span>
             </div>
             <div class="metric-item">
-              <span class="metric-label">Annual Water Runoff</span>
-              <span class="metric-value" id="valRunoffM3">0 m³</span>
-              <span class="metric-sub" id="valRunoffLiters">0 Liters</span>
+              <span class="metric-label">Selected Land Area</span>
+              <span class="metric-value" id="valSelArea">—</span>
+              <span class="metric-sub" id="valSelAreaSub">whole map</span>
             </div>
             <div class="metric-item">
               <span class="metric-label">Recommended Capacity</span>
@@ -89,6 +126,7 @@
             <li><span>Avg Slope / TWI:</span> <b id="valSlope">0°</b></li>
             <li><span>Map Coverage:</span> <b id="valCoverage">0m x 0m</b></li>
             <li><span>Contours / Projection:</span> <b id="valContours">0 lines</b></li>
+            <li><span>Served by / time:</span> <b id="valServed">—</b></li>
           </ul>
         </div>
 
@@ -113,7 +151,7 @@
       </div>
       <div class="map-header-badge">
         <span class="badge-dot"></span>
-        <span id="mapStatusText">Upload a contour map to discover pond locations &amp; catchments</span>
+        <span id="mapStatusText">Draw your land area inside the dashed boundary</span>
       </div>
     </main>
   </div>
@@ -167,7 +205,8 @@
     </div>
   </div>
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="/static/vendor/leaflet/leaflet.js"></script>
+  <script src="/static/vendor/leaflet-draw/leaflet.draw.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

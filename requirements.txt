@@ -1,6 +1,8 @@
-flask==3.0.3
-flask-cors==5.0.1
-numpy==2.1.1
-scipy==1.17.1
-pyproj==3.7.2
-shapely==2.1.2
+flask>=2.3
+flask-cors>=4.0
+numpy>=1.24
+scipy>=1.10
+pyproj>=3.4
+shapely>=2.0
+matplotlib>=3.7
+gunicorn>=21.2

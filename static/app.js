@@ -1,263 +1,328 @@
 document.addEventListener('DOMContentLoaded', () => {
-  // Initialize Leaflet Map
-  const map = L.map('map').setView([21.25, 81.29], 13);
+  // ── Map & base layers ───────────────────────────────────────────────────
+  const map = L.map('map', { zoomControl: false }).setView([21.25, 81.29], 14);
+  L.control.zoom({ position: 'bottomleft' }).addTo(map);
 
-  // Base Map Tile Layers (Lightweight CDN Tiles)
   const streetMap = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenStreetMap contributors',
-    maxZoom: 19
+    attribution: '&copy; OpenStreetMap contributors', maxZoom: 19
   });
-
   const terrainMap = L.tileLayer('https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png', {
-    attribution: '&copy; OpenTopoMap (CC-BY-SA)',
-    maxZoom: 17
+    attribution: '&copy; OpenTopoMap (CC-BY-SA)', maxZoom: 17
   });
-
   const satelliteMap = L.tileLayer('https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}', {
     attribution: 'Tiles &copy; Esri &mdash; Source: Esri, i-cubed, USDA, USGS, AEX, GeoEye, Getmapping, Aerogrid, IGN, IGP, UPR-EGP, and the GIS User Community',
     maxZoom: 18
   });
-
-  // Default to Satellite View so field boundaries and terrain are instantly visible
   satelliteMap.addTo(map);
 
-  // Add Layer Control widget (Street, Terrain Topo, Satellite)
-  const baseMaps = {
-    "🗺️ Standard Street": streetMap,
-    "🏔️ Terrain Topo": terrainMap,
-    "🛰️ Satellite View": satelliteMap
+  const coverageLayer = L.layerGroup().addTo(map);   // dashed data footprint
+  const drawnItems = new L.FeatureGroup().addTo(map); // user-selected land area
+  const layerGroup = L.layerGroup().addTo(map);      // analysis results
+  const labelLayer = L.layerGroup().addTo(map);      // permanent volume labels
+
+  L.control.layers(
+    { '🗺️ Standard Street': streetMap, '🏔️ Terrain Topo': terrainMap, '🛰️ Satellite View': satelliteMap },
+    { 'Data coverage': coverageLayer, 'Selected land': drawnItems, 'Ponds & catchments': layerGroup, 'Volume labels': labelLayer },
+    { position: 'topright' }
+  ).addTo(map);
+  L.control.scale({ imperial: false }).addTo(map);
+
+  // Legend
+  const legend = L.control({ position: 'bottomright' });
+  legend.onAdd = () => {
+    const div = L.DomUtil.create('div', 'map-legend');
+    div.innerHTML = `
+      <b>Legend</b>
+      <div><span class="lg lg-cov"></span> Contour data coverage</div>
+      <div><span class="lg lg-sel"></span> Selected land area</div>
+      <div><span class="lg lg-cat"></span> Catchment (drains to pond)</div>
+      <div><span class="lg lg-pond"></span> Pond footprint (to scale)</div>
+      <div><span class="lg lg-site"></span> Pond site</div>`;
+    return div;
   };
+  legend.addTo(map);
 
-  L.control.layers(baseMaps, null, { position: 'topright' }).addTo(map);
+  // ── Drawing tools (Leaflet.draw) ────────────────────────────────────────
+  const shapeStyle = { color: '#FFFFFF', weight: 3, dashArray: null, fillColor: '#FFFFFF', fillOpacity: 0.06 };
+  const rectDrawer = new L.Draw.Rectangle(map, { shapeOptions: shapeStyle, showArea: true, metric: true });
+  const polyDrawer = new L.Draw.Polygon(map, { shapeOptions: shapeStyle, showArea: true, metric: true, allowIntersection: false });
 
-  let layerGroup = L.layerGroup().addTo(map);
+  // ── State ───────────────────────────────────────────────────────────────
   let globalAnalysisData = null;
+  let selectedPolygon = null;     // [[lon,lat],...] closed ring, or null = whole map
+  let wholeMapMode = false;
+  let uploadedFile = null;        // File object when the user uses their own KML/KMZ
+  let lastPayload = null;         // what produced the current result (for plots / 3D)
   let activeRank = 1;
 
-  // DOM Elements
-  const dropZone = document.getElementById('dropZone');
-  const fileInput = document.getElementById('fileInput');
-  const fileNameDisplay = document.getElementById('fileNameDisplay');
-  const btnAnalyze = document.getElementById('btnAnalyze');
-  const btnSample = document.getElementById('btnSample');
-  const uploadForm = document.getElementById('uploadForm');
-  const loaderOverlay = document.getElementById('loaderOverlay');
-  const resultsContainer = document.getElementById('resultsContainer');
-  const mapStatusText = document.getElementById('mapStatusText');
-  const candidateTabs = document.getElementById('candidateTabs');
+  // DOM
+  const $ = (id) => document.getElementById(id);
+  const loaderOverlay = $('loaderOverlay');
+  const resultsContainer = $('resultsContainer');
+  const mapStatusText = $('mapStatusText');
+  const candidateTabs = $('candidateTabs');
+  const btnAnalyzeArea = $('btnAnalyzeArea');
+  const areaReadout = $('areaReadout');
 
-  // Drag and Drop Logic
+  // ── Data coverage footprint ─────────────────────────────────────────────
+  async function loadCoverage() {
+    try {
+      const res = await fetch('/api/coverage');
+      const d = await res.json();
+      if (!d.success) return;
+      coverageLayer.clearLayers();
+      const latlngs = d.coverage_polygon.map(([lon, lat]) => [lat, lon]);
+      L.polygon(latlngs, { color: '#FACC15', weight: 2, dashArray: '8 6', fill: false, interactive: false })
+        .addTo(coverageLayer);
+      map.fitBounds(latlngs, { padding: [20, 20] });
+      mapStatusText.textContent = `Sample contour data loaded (${d.elevation_range_m[0]}–${d.elevation_range_m[1]} m). Draw your land area inside the dashed boundary.`;
+    } catch (e) { /* map still usable */ }
+  }
+  loadCoverage();
+
+  function showUploadedCoverage(data) {
+    // For an uploaded map, show the bounding box of the analysed grid as coverage
+    coverageLayer.clearLayers();
+    const feats = (data.geojson_layers && data.geojson_layers.features) || [];
+    const pts = [];
+    feats.forEach(f => {
+      if (f.geometry.type === 'Point') pts.push([f.geometry.coordinates[1], f.geometry.coordinates[0]]);
+      else f.geometry.coordinates[0].forEach(c => pts.push([c[1], c[0]]));
+    });
+    if (pts.length) map.fitBounds(pts, { padding: [40, 40] });
+  }
+
+  // ── Selection helpers ───────────────────────────────────────────────────
+  function geodesicAreaM2(latlngs) {
+    return (L.GeometryUtil && L.GeometryUtil.geodesicArea) ? L.GeometryUtil.geodesicArea(latlngs) : 0;
+  }
+
+  function setSelection(layer) {
+    drawnItems.clearLayers();
+    drawnItems.addLayer(layer);
+    const latlngs = layer.getLatLngs()[0];
+    selectedPolygon = latlngs.map(p => [+p.lng.toFixed(7), +p.lat.toFixed(7)]);
+    selectedPolygon.push(selectedPolygon[0]);
+    wholeMapMode = false;
+    const a = geodesicAreaM2(latlngs);
+    areaReadout.innerHTML = `Selected: <b>${(a / 10000).toFixed(2)} ha</b> (${Math.round(a).toLocaleString()} m², ${latlngs.length} vertices)`;
+    btnAnalyzeArea.disabled = false;
+  }
+
+  function clearSelection() {
+    drawnItems.clearLayers(); layerGroup.clearLayers(); labelLayer.clearLayers();
+    selectedPolygon = null; wholeMapMode = false;
+    areaReadout.innerHTML = 'No area selected — draw inside the dashed <b>data coverage</b> boundary.';
+    btnAnalyzeArea.disabled = true;
+    resultsContainer.style.display = 'none';
+  }
+
+  map.on(L.Draw.Event.CREATED, (e) => {
+    setSelection(e.layer);
+    runAreaAnalysis();                       // auto-run as soon as the area is drawn
+  });
+
+  $('btnDrawRect').addEventListener('click', () => { polyDrawer.disable(); rectDrawer.enable(); mapStatusText.textContent = 'Click and drag on the map to draw a rectangle.'; });
+  $('btnDrawPoly').addEventListener('click', () => { rectDrawer.disable(); polyDrawer.enable(); mapStatusText.textContent = 'Click to add vertices; click the first point to close the polygon.'; });
+  $('btnClearArea').addEventListener('click', clearSelection);
+  $('btnWholeMap').addEventListener('click', () => {
+    drawnItems.clearLayers(); selectedPolygon = null; wholeMapMode = true;
+    areaReadout.innerHTML = 'Whole contour map selected.';
+    btnAnalyzeArea.disabled = false;
+    runAreaAnalysis();
+  });
+  btnAnalyzeArea.addEventListener('click', runAreaAnalysis);
+
+  // ── Upload (optional dataset) ───────────────────────────────────────────
+  const dropZone = $('dropZone'), fileInput = $('fileInput'), fileNameDisplay = $('fileNameDisplay'), btnAnalyze = $('btnAnalyze');
+  $('toggleUpload').addEventListener('click', () => {
+    const b = $('uploadBody'); b.style.display = b.style.display === 'none' ? 'block' : 'none';
+  });
   dropZone.addEventListener('click', () => fileInput.click());
-
-  dropZone.addEventListener('dragover', (e) => {
-    e.preventDefault();
-    dropZone.classList.add('drag-over');
-  });
-
-  ['dragleave', 'dragend'].forEach(evt => {
-    dropZone.addEventListener(evt, () => dropZone.classList.remove('drag-over'));
-  });
-
+  dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+  ['dragleave', 'dragend'].forEach(evt => dropZone.addEventListener(evt, () => dropZone.classList.remove('drag-over')));
   dropZone.addEventListener('drop', (e) => {
-    e.preventDefault();
-    dropZone.classList.remove('drag-over');
-    if (e.dataTransfer.files.length) {
-      fileInput.files = e.dataTransfer.files;
-      handleFileSelected();
-    }
+    e.preventDefault(); dropZone.classList.remove('drag-over');
+    if (e.dataTransfer.files.length) { fileInput.files = e.dataTransfer.files; handleFileSelected(); }
   });
-
   fileInput.addEventListener('change', handleFileSelected);
-
   function handleFileSelected() {
     if (fileInput.files.length > 0) {
-      const file = fileInput.files[0];
-      fileNameDisplay.textContent = `Selected: ${file.name} (${(file.size / 1024).toFixed(1)} KB)`;
+      const f = fileInput.files[0];
+      fileNameDisplay.textContent = `Selected: ${f.name} (${(f.size / 1024).toFixed(1)} KB)`;
       btnAnalyze.disabled = false;
     }
   }
-
-  // Handle Form Submit (Upload File)
-  uploadForm.addEventListener('submit', async (e) => {
+  $('uploadForm').addEventListener('submit', async (e) => {
     e.preventDefault();
     if (!fileInput.files.length) return;
-
-    const formData = new FormData();
-    formData.append('file', fileInput.files[0]);
-
-    await runAnalysis('/analyzeContour', {
-      method: 'POST',
-      body: formData
-    }, fileInput.files[0].name);
+    uploadedFile = fileInput.files[0];
+    $('datasetName').textContent = uploadedFile.name;
+    drawnItems.clearLayers(); selectedPolygon = null; wholeMapMode = true;
+    areaReadout.innerHTML = `Using <b>${uploadedFile.name}</b> — whole map analysed. Now draw a land area on it.`;
+    btnAnalyzeArea.disabled = false;
+    const ok = await runAreaAnalysis();
+    if (ok) showUploadedCoverage(globalAnalysisData);
+  });
+  $('btnUseSample').addEventListener('click', () => {
+    uploadedFile = null; fileInput.value = ''; fileNameDisplay.textContent = ''; btnAnalyze.disabled = true;
+    $('datasetName').textContent = 'contours_1m.kml (sample)';
+    clearSelection(); loadCoverage();
   });
 
-  // Handle Run Sample Map
-  btnSample.addEventListener('click', async () => {
-    await runAnalysis('/api/sample', { method: 'GET' }, 'contours_1m.kml (Sample Map)');
-  });
+  // ── Request building (stateless: dataset + polygon + params every time) ─
+  function readParams() {
+    return { rainfall_mm: parseFloat($('inRain').value), runoff_coeff: parseFloat($('inCoeff').value), pond_depth_m: parseFloat($('inDepth').value) };
+  }
+  function buildRequest(payload) {
+    if (payload.file) {
+      const fd = new FormData();
+      fd.append('file', payload.file);
+      if (payload.polygon) fd.append('polygon', JSON.stringify(payload.polygon));
+      Object.entries(payload.params).forEach(([k, v]) => fd.append(k, v));
+      return { method: 'POST', body: fd };
+    }
+    return { method: 'POST', headers: { 'Content-Type': 'application/json' },
+             body: JSON.stringify({ polygon: payload.polygon, ...payload.params }) };
+  }
 
-  // Perform Analysis API Call
-  async function runAnalysis(endpoint, options, filename) {
+  async function runAreaAnalysis() {
+    if (!selectedPolygon && !wholeMapMode) { mapStatusText.textContent = 'Draw a land area first.'; return false; }
+    const payload = { polygon: selectedPolygon, params: readParams(), file: uploadedFile };
     loaderOverlay.style.display = 'flex';
-    mapStatusText.textContent = `Analyzing ${filename}...`;
-
+    mapStatusText.textContent = 'Analysing selected land area...';
+    const t0 = performance.now();
     try {
-      const response = await fetch(endpoint, options);
+      const response = await fetch('/api/analyzeArea', buildRequest(payload));
       const result = await response.json();
-
-      if (!response.ok || !result.success) {
-        throw new Error(result.error || 'Failed to analyze contour map.');
-      }
-
+      if (!response.ok || !result.success) throw new Error(result.error || `Request failed (${response.status})`);
+      const rtt = Math.round(performance.now() - t0);
       globalAnalysisData = result.data;
-      renderAnalysisResults(result.data, filename);
-      mapStatusText.textContent = `Analysis Complete: ${filename} (${result.data.total_catchments_detected || 1} catchments detected)`;
+      lastPayload = payload;
+      renderAnalysisResults(result.data);
+      $('valServed').textContent = `${result.served_by} · ${rtt} ms${result.cache_hit ? ' (cached)' : ''}`;
+      const n = result.data.total_catchments_detected || 1;
+      mapStatusText.textContent = `${n} pond site${n > 1 ? 's' : ''} found · expected ${Math.round(result.data.total_expected_water_volume_all_sites_m3).toLocaleString()} m³/yr · ${rtt} ms`;
+      return true;
     } catch (err) {
-      alert(`Error: ${err.message}`);
-      mapStatusText.textContent = 'Analysis Failed.';
+      mapStatusText.textContent = `⚠ ${err.message}`;
+      layerGroup.clearLayers(); labelLayer.clearLayers();
+      resultsContainer.style.display = 'none';
+      return false;
     } finally {
       loaderOverlay.style.display = 'none';
     }
   }
 
-  // Render Analysis Results & Map Layers
-  function renderAnalysisResults(data, filename) {
+  // ── Rendering ───────────────────────────────────────────────────────────
+  const fmt = (v, d = 0) => Number(v).toLocaleString(undefined, { maximumFractionDigits: d });
+
+  function renderAnalysisResults(data) {
     resultsContainer.style.display = 'block';
-    layerGroup.clearLayers();
+    layerGroup.clearLayers(); labelLayer.clearLayers();
+    const candidates = data.all_candidate_sites || [];
+    const feats = (data.geojson_layers && data.geojson_layers.features) || [];
 
-    const candidates = data.all_candidate_sites || [
-      {
-        rank: 1,
-        is_primary: true,
-        pond_location: data.pond_location,
-        catchment_summary: data.catchment_summary,
-        water_harvesting_estimates: data.water_harvesting_estimates,
-        color: '#10B981'
-      }
-    ];
-
-    // Render Tabs for Candidate Catchments
     candidateTabs.innerHTML = '';
     candidates.forEach((cand) => {
       const btn = document.createElement('button');
       btn.className = `tab-btn ${cand.rank === 1 ? 'active' : ''}`;
       btn.style.borderColor = cand.color;
-      btn.innerHTML = `<span class="tab-badge" style="background:${cand.color}">#${cand.rank}</span> Site #${cand.rank} (${cand.catchment_summary.area_hectares} ha)`;
+      btn.innerHTML = `<span class="tab-badge" style="background:${cand.color}">#${cand.rank}</span> Site #${cand.rank} · ${cand.catchment_summary.area_hectares} ha · ${fmt(cand.water_harvesting_estimates.expected_water_volume_m3)} m³`;
       btn.addEventListener('click', () => switchCandidate(cand.rank));
       candidateTabs.appendChild(btn);
     });
+    const note = $('siteNote');
+    if (data.site_selection_note) { note.style.display = 'block'; note.textContent = data.site_selection_note; }
+    else note.style.display = 'none';
 
-    // Populate Map Layers from GeoJSON
-    const geoBounds = [];
-    if (data.geojson_layers && data.geojson_layers.features) {
-      L.geoJSON(data.geojson_layers, {
-        style: (feature) => {
-          const color = feature.properties.color || '#06B6D4';
-          return {
-            color: color,
-            weight: 2,
-            opacity: 0.85,
-            fillColor: color,
-            fillOpacity: 0.22
-          };
-        },
-        pointToLayer: (feature, latlng) => {
-          const color = feature.properties.color || '#10B981';
-          const p = feature.properties;
-          geoBounds.push([latlng.lat, latlng.lng]);
-          return L.circleMarker(latlng, {
-            radius: 11,
-            fillColor: color,
-            color: '#FFFFFF',
-            weight: 3,
-            opacity: 1,
-            fillOpacity: 0.95
-          }).bindPopup(`
-            <div style="font-family:Inter,sans-serif;min-width:190px">
-              <h4 style="margin:0 0 6px;color:${color};font-size:14px">📍 Candidate Site #${p.rank}</h4>
+    const bounds = [];
+    const order = { selected_area: 0, catchment: 1, pond_footprint: 2, pond_site: 3 };
+    feats.slice().sort((a, b) => order[a.properties.kind] - order[b.properties.kind]).forEach((f) => {
+      const p = f.properties;
+      if (f.geometry.type === 'Point') {
+        const [lon, lat] = f.geometry.coordinates;
+        bounds.push([lat, lon]);
+        const m = L.circleMarker([lat, lon], { radius: 9, fillColor: p.color, color: '#FFFFFF', weight: 3, fillOpacity: 1 })
+          .bindPopup(`
+            <div style="font-family:Inter,sans-serif;min-width:210px">
+              <h4 style="margin:0 0 6px;color:${p.color};font-size:14px">📍 Pond Site #${p.rank}</h4>
               <table style="width:100%;font-size:12px;border-collapse:collapse">
+                <tr><td><b>Location</b></td><td>${lat.toFixed(5)}, ${lon.toFixed(5)}</td></tr>
                 <tr><td><b>Elevation</b></td><td>${p.elevation_m} m</td></tr>
                 <tr><td><b>Catchment</b></td><td>${p.area_ha} ha</td></tr>
+                <tr><td><b>Water volume</b></td><td>${fmt(p.water_volume_m3)} m³/yr</td></tr>
+                <tr><td><b>Pond capacity</b></td><td>${fmt(p.pond_capacity_m3)} m³</td></tr>
                 <tr><td><b>Suitability</b></td><td>${p.suitability_score}%</td></tr>
-                <tr><td><b>River Dist</b></td><td>${p.river_distance_m} m away</td></tr>
-                <tr><td><b>Depression</b></td><td>${p.depression_depth_m} m deep</td></tr>
-                <tr><td><b>TWI</b></td><td>${p.twi || 'N/A'}</td></tr>
+                <tr><td><b>River dist.</b></td><td>${p.river_distance_m} m</td></tr>
               </table>
-            </div>
-          `);
-        },
-        onEachFeature: (feature, layer) => {
-          if (feature.geometry.type === 'Polygon') {
-            const p = feature.properties;
-            layer.bindTooltip(`<b>Catchment Basin #${p.rank || ''}</b> (${p.area_ha || ''} ha)`, { sticky: true });
-            const coords = feature.geometry.coordinates[0];
-            coords.forEach(c => geoBounds.push([c[1], c[0]]));
-          }
-        }
-      }).addTo(layerGroup);
-    }
-
-    // Fit map to show all catchments
-    if (geoBounds.length > 0) {
-      map.fitBounds(geoBounds, { padding: [30, 30] });
-    } else {
-      const primaryPond = data.pond_location;
-      map.setView([primaryPond.latitude, primaryPond.longitude], 14);
-    }
-
-    // Populate Sidebar Metrics for Rank 1
-    displayCandidateMetrics(candidates[0]);
-
-    // Terrain Stats
-    const stats = data.terrain_statistics || {};
-    document.getElementById('valElevRange').textContent = `${stats.min_elevation_m || 0}m - ${stats.max_elevation_m || 0}m`;
-    document.getElementById('valSlope').textContent = `${stats.avg_slope_deg || 0}° avg | TWI ${stats.avg_twi || 'N/A'}`;
-    document.getElementById('valCoverage').textContent = `${stats.map_width_meters || 0}m x ${stats.map_height_meters || 0}m | Buffer: ${stats.river_buffer_used_m || 0}m`;
-    document.getElementById('valContours').textContent = `${data.input_file_info ? data.input_file_info.contour_count : '2,711'} lines | ${stats.utm_projection || 'WGS84'}`;
-
-    // JSON Collapsible
-    document.getElementById('jsonPre').textContent = JSON.stringify(data, null, 2);
-  }
-
-  // Switch Active Sub-Catchment Tab
-  function switchCandidate(rank) {
-    activeRank = rank;
-    const candidates = globalAnalysisData.all_candidate_sites || [];
-    const selected = candidates.find(c => c.rank === rank) || candidates[0];
-
-    // Update Tab UI
-    document.querySelectorAll('.tab-btn').forEach((btn, idx) => {
-      if (idx + 1 === rank) {
-        btn.classList.add('active');
-      } else {
-        btn.classList.remove('active');
+            </div>`)
+          .addTo(layerGroup);
+        m.on('click', () => switchCandidate(p.rank, false));
+        L.marker([lat, lon], {
+          interactive: false,
+          icon: L.divIcon({ className: 'vol-label', iconSize: null, iconAnchor: [-12, 18],
+            html: `<div style="border-color:${p.color}"><b>#${p.rank}</b> 💧 ${fmt(p.water_volume_m3)} m³/yr<br><small>catchment ${p.area_ha} ha · pond ${fmt(p.pond_capacity_m3)} m³</small></div>` })
+        }).addTo(labelLayer);
+        return;
+      }
+      const latlngs = f.geometry.coordinates[0].map(([lon, lat]) => [lat, lon]);
+      latlngs.forEach(ll => bounds.push(ll));
+      if (p.kind === 'selected_area') {
+        L.polygon(latlngs, { color: '#FFFFFF', weight: 2.5, fill: false, interactive: false }).addTo(layerGroup);
+      } else if (p.kind === 'catchment') {
+        L.polygon(latlngs, { color: p.color, weight: 2, fillColor: p.color, fillOpacity: 0.28 })
+          .bindTooltip(`<b>Catchment #${p.rank}</b><br>${p.area_ha} ha → ${fmt(p.water_volume_m3)} m³/yr`, { sticky: true })
+          .addTo(layerGroup);
+      } else if (p.kind === 'pond_footprint') {
+        L.polygon(latlngs, { color: '#93C5FD', weight: 2, fillColor: '#2563EB', fillOpacity: 0.85 })
+          .bindTooltip(`<b>Pond #${p.rank}</b> ${p.dimensions} × ${p.depth_m} m<br>capacity ${fmt(p.pond_capacity_m3)} m³`, { sticky: true })
+          .addTo(layerGroup);
       }
     });
 
-    displayCandidateMetrics(selected);
+    if (!selectedPolygon && bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+    else if (selectedPolygon) map.fitBounds(drawnItems.getBounds().extend(L.latLngBounds(bounds)), { padding: [30, 30] });
 
-    // Pan Map to Selected Site
-    if (selected.pond_location) {
-      map.panTo([selected.pond_location.latitude, selected.pond_location.longitude]);
-    }
+    displayCandidateMetrics(candidates[0]);
+
+    const stats = data.terrain_statistics || {};
+    $('valElevRange').textContent = `${stats.min_elevation_m}m - ${stats.max_elevation_m}m`;
+    $('valSlope').textContent = `${stats.avg_slope_deg}° avg | TWI ${stats.avg_twi}`;
+    $('valCoverage').textContent = `${fmt(stats.map_width_meters)}m x ${fmt(stats.map_height_meters)}m | cell ${stats.cell_size_m}m | buffer ${stats.river_buffer_used_m}m`;
+    $('valContours').textContent = `${data.input_file_info ? fmt(data.input_file_info.contour_count) : '-'} lines | ${stats.utm_projection}`;
+    const sa = data.selected_area;
+    $('valSelArea').textContent = sa ? `${sa.area_hectares} ha` : 'Whole map';
+    $('valSelAreaSub').textContent = sa ? `${sa.data_coverage_pct}% covered by contour data` : `${fmt(stats.map_width_meters)} × ${fmt(stats.map_height_meters)} m`;
+    $('jsonPre').textContent = JSON.stringify(data, null, 2);
+  }
+
+  function switchCandidate(rank, pan = true) {
+    activeRank = rank;
+    const candidates = globalAnalysisData.all_candidate_sites || [];
+    const selected = candidates.find(c => c.rank === rank) || candidates[0];
+    document.querySelectorAll('.tab-btn').forEach((btn, idx) => btn.classList.toggle('active', idx + 1 === rank));
+    displayCandidateMetrics(selected);
+    if (pan && selected.pond_location) map.panTo([selected.pond_location.latitude, selected.pond_location.longitude]);
   }
 
   function displayCandidateMetrics(cand) {
-    document.getElementById('selectedSiteTitle').innerHTML = `<i class="fa-solid fa-chart-pie"></i> Catchment #${cand.rank} Overview`;
-    document.getElementById('valAreaHa').textContent = `${cand.catchment_summary.area_hectares} ha`;
-    document.getElementById('valAreaM2').textContent = `${cand.catchment_summary.area_m2.toLocaleString()} m² / ${cand.catchment_summary.area_acres} acres`;
-
+    $('selectedSiteTitle').innerHTML = `<i class="fa-solid fa-chart-pie"></i> Pond Site #${cand.rank} Results`;
+    $('valAreaHa').textContent = `${cand.catchment_summary.area_hectares} ha`;
+    $('valAreaM2').textContent = `${fmt(cand.catchment_summary.area_m2)} m² / ${cand.catchment_summary.area_acres} acres`;
     const loc = cand.pond_location;
-    document.getElementById('valPondCoords').textContent = `${loc.latitude}, ${loc.longitude}`;
-    const riverDistStr = loc.river_buffer_distance_m ? ` | River Dist: ${loc.river_buffer_distance_m}m` : '';
-    document.getElementById('valPondElev').textContent = `Elev: ${loc.elevation_m}m${riverDistStr}`;
+    $('valPondCoords').textContent = `${loc.latitude}, ${loc.longitude}`;
+    $('valPondElev').textContent = `Elev: ${loc.elevation_m}m | slope ${loc.terrain_slope_deg}° | river ${loc.river_buffer_distance_m}m`;
+    const w = cand.water_harvesting_estimates;
+    $('valVolume').textContent = `${fmt(w.expected_water_volume_m3)} m³`;
+    $('valVolumeSub').textContent = `${(w.estimated_annual_runoff_liters / 1e6).toFixed(2)} ML = ${w.runoff_coefficient_C} × ${w.assumed_annual_rainfall_mm} mm × ${cand.catchment_summary.area_hectares} ha`;
+    $('valPondCap').textContent = `${fmt(w.recommended_pond_capacity_m3)} m³`;
+    $('valPondDims').textContent = `${w.recommended_dimensions_m} × ${w.recommended_pond_depth_m}m deep`;
+  }
 
-    const water = cand.water_harvesting_estimates;
-    document.getElementById('valRunoffM3').textContent = `${water.estimated_annual_runoff_m3.toLocaleString()} m³`;
-    document.getElementById('valRunoffLiters').textContent = `${(water.estimated_annual_runoff_liters / 1000000).toFixed(2)} Million Liters`;
-
-    document.getElementById('valPondCap').textContent = `${water.recommended_pond_capacity_m3.toLocaleString()} m³`;
-    document.getElementById('valPondDims').textContent = `${water.recommended_dimensions_m} (${water.recommended_pond_depth_m}m depth)`;
+  // Payload for plots / 3D uses exactly the request that produced the results
+  function currentRequest() {
+    return lastPayload ? buildRequest(lastPayload) : { method: 'GET' };
   }
 
   // ── Terrain Plots Modal ─────────────────────────────────────────────────
@@ -266,6 +331,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const plotsGrid = document.getElementById('plotsGrid');
   const btnTerrain = document.getElementById('btnTerrainPlots');
   const closePlots = document.getElementById('closePlots');
+  const plotsLoadingHTML = plotsLoading.innerHTML;
 
   const PLOT_LABELS = {
     '3d_elevation': { title: '3D Terrain Elevation Surface', icon: 'fa-mountain' },
@@ -279,12 +345,13 @@ document.addEventListener('DOMContentLoaded', () => {
   if (btnTerrain) {
     btnTerrain.addEventListener('click', async () => {
       plotsModal.style.display = 'block';
+      plotsLoading.innerHTML = plotsLoadingHTML;
       plotsLoading.style.display = 'block';
       plotsGrid.style.display = 'none';
       plotsGrid.innerHTML = '';
 
       try {
-        const res = await fetch('/api/plots');
+        const res = await fetch('/api/plots', currentRequest());
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Plot generation failed');
 
@@ -338,14 +405,16 @@ document.addEventListener('DOMContentLoaded', () => {
   const btnReset3D = document.getElementById('btnReset3D');
   const plotly3DLoading = document.getElementById('plotly3DLoading');
   let plotly3DData = null;
+  const plotly3DLoadingHTML = plotly3DLoading.innerHTML;
 
   if (btn3DTerrain) {
     btn3DTerrain.addEventListener('click', async () => {
       modal3D.style.display = 'block';
+      plotly3DLoading.innerHTML = plotly3DLoadingHTML;
       plotly3DLoading.style.display = 'flex';
 
       try {
-        const res = await fetch('/api/terrain_3d_mesh');
+        const res = await fetch('/api/terrain_3d_mesh', currentRequest());
         const data = await res.json();
         if (!data.success) throw new Error(data.error || 'Failed to fetch 3D mesh');
 
@@ -364,9 +433,9 @@ document.addEventListener('DOMContentLoaded', () => {
       return;
     }
 
-    const minElev = 260;
-    const maxElev = 300;
-    const zRange  = [250, 300];
+    const minElev = data.min_elev;
+    const maxElev = data.max_elev;
+    const zRange  = data.z_range;
 
     // Vibrant topographical colormap:
     // River channel (deep blue) -> Water edge (cyan) -> Farmland basin (emerald) -> Slopes (gold) -> Peaks (mountain brown)
