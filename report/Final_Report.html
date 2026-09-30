@@ -195,12 +195,13 @@
   Department of Computer Science and Engineering, IIT Bhilai, India<br>
   <code>chaitanya.kumar@iitbhilai.ac.in</code><br>
   <strong>GitHub:</strong> <a href="https://github.com/chaitanyakumarAI/Pond_catchment_analysis">https://github.com/chaitanyakumarAI/Pond_catchment_analysis</a> &nbsp;|&nbsp; 
-  <strong>Live System:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a>
+  <strong>Live System:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a><br>
+  <strong>YouTube Video Demonstration:</strong> <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>
 </div>
 
 <div class="abstract-box">
   <div class="abstract-title">ABSTRACT.</div>
-  Small-scale farm ponds are a vital rainwater-harvesting intervention for mitigating seasonal drought and enhancing agricultural resilience across rural India. However, traditional manual site-selection approaches rely on labor-intensive, ad-hoc topographical field surveys that struggle to analyze spatial hydrology across extensive areas. This project presents a high-throughput, web-based geospatial decision-support system designed to identify optimal village pond locations, delineate catchment boundaries, and calculate expected annual rainwater runoff. Built on an interactive Leaflet GIS interface, the user selects any arbitrary agricultural parcel or village boundary via polygon and rectangle drawing tools. The backend processes contour maps to construct high-resolution Digital Elevation Models (DEMs), executes Priority-Flood sink filling, delineates D8 hydrological flow routing, and computes a multi-criteria Pond Suitability Index (PSI) combining depression depth, upstream flow accumulation, topographic wetness index (TWI), and relative slope elevation. To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120 ms and 0% error rates, compared to severe saturation on a single-node deployment. The production web application is live and publicly accessible at <code>http://10.1.75.51:5237/</code>.
+  Small-scale farm ponds are a vital rainwater-harvesting intervention for mitigating seasonal drought and enhancing agricultural resilience across rural India. However, traditional manual site-selection approaches rely on labor-intensive, ad-hoc topographical field surveys that struggle to analyze spatial hydrology across extensive areas. This project presents a high-throughput, web-based geospatial decision-support system designed to identify optimal village pond locations, delineate catchment boundaries, and calculate expected annual rainwater runoff. Built on an interactive Leaflet GIS interface, the user selects any arbitrary agricultural parcel or village boundary via polygon and rectangle drawing tools. The backend processes contour maps to construct high-resolution Digital Elevation Models (DEMs), executes Priority-Flood sink filling, delineates D8 hydrological flow routing, and computes a multi-criteria Pond Suitability Index (PSI) combining depression depth, upstream flow accumulation, topographic wetness index (TWI), and relative slope elevation. To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120 ms and 0% error rates, compared to severe saturation on a single-node deployment. The production web application is live and publicly accessible at <code>http://10.1.75.51:5237/</code>, with an accompanying video demonstration at <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>.
   <div class="keywords">
     <strong>Keywords:</strong> Village Pond Planning, Geospatial Hydrology, Digital Elevation Models, Rainwater Harvesting, Catchment Delineation, Layer-7 Load Balancing, Web GIS, Distributed Systems
   </div>
@@ -471,11 +472,12 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 </ol>
 <p>All AI-assisted code, algorithms, and technical texts were rigorously reviewed, verified against ground truth calculations, tested on the physical cluster, and adapted by the author. No confidential institutional credentials were shared with AI services.</p>
 
-<hr class="sep">
+<div class="page-break"></div>
 
-<h2>Appendix: Source Code and Repository</h2>
+<h2>Appendix: Source Code, Deployment and Video Demonstration</h2>
 <p class="no-indent"><strong>GitHub Repository:</strong> <a href="https://github.com/chaitanyakumarAI/Pond_catchment_analysis">https://github.com/chaitanyakumarAI/Pond_catchment_analysis</a><br>
-<strong>Live Deployment:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a></p>
+<strong>Live Deployment:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a><br>
+<strong>YouTube Video Demonstration:</strong> <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a></p>
 
 <h3>Repository Structure</h3>
 <ul>
