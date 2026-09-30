@@ -43,7 +43,7 @@
 \begin{abstract}
 Small-scale farm ponds are a vital rainwater-harvesting intervention for mitigating seasonal drought and enhancing agricultural resilience across rural India. However, traditional manual site-selection approaches rely on labor-intensive, ad-hoc topographical field surveys that struggle to analyze spatial hydrology across extensive areas. This project presents a high-throughput, web-based geospatial decision-support system designed to identify optimal village pond locations, delineate catchment boundaries, and calculate expected annual rainwater runoff. Built on an interactive Leaflet GIS interface, the user selects any arbitrary agricultural parcel or village boundary via polygon and rectangle drawing tools. The backend processes contour maps to construct high-resolution Digital Elevation Models (DEMs), executes Priority-Flood sink filling, delineates D8 hydrological flow routing, and computes a multi-criteria Pond Suitability Index (PSI) combining depression depth, upstream flow accumulation, topographic wetness index (TWI), and relative slope elevation. 
 
-To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120\,ms and 0\% error rates, compared to severe saturation and queuing on a single-node deployment. The production web application is live and publicly accessible at \url{http://10.1.75.51:5237/}.
+To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120\,ms and 0\% error rates, compared to severe saturation on a single-node deployment. The production web application is live and publicly accessible at \url{http://10.1.75.51:5237/}.
 \end{abstract}
 
 \keywords{Village Pond Planning, Geospatial Hydrology, Digital Elevation Models, Rainwater Harvesting, Catchment Delineation, Layer-7 Load Balancing, Web GIS, Distributed Systems}
@@ -126,10 +126,10 @@ The deployment architecture is illustrated in Figure~\ref{fig:architecture}. The
     box/.default=white, >=Stealth]
   \node[box=blue!10] (br) {\textbf{Client Browser}\\Leaflet.js + Leaflet.draw\\Satellite / Topo Views};
   \node[box=orange!20,right=of br] (lb) {\textbf{Sys1: Load Balancer (Go)}\\\texttt{pond\_lb} (Port 5000 / 5237)\\Least-inflight routing\\Health monitor \& admission control};
-  \node[box=green!10,right=of lb,yshift=18mm] (w1) {\textbf{Sys1 Worker (5002)}\\Gunicorn $\times$ 119 procs\\Shared DEM memory};
-  \node[box=green!10,below=of w1] (w2) {\textbf{Sys2 Worker (5002)}\\Gunicorn $\times$ 119 procs};
-  \node[box=green!10,below=of w2] (w3) {\textbf{Sys3 Worker (5002)}\\Gunicorn $\times$ 119 procs};
-  \node[box=green!10,below=of w3] (w4) {\textbf{Sys4 Worker (5002)}\\Gunicorn $\times$ 119 procs};
+  \node[box=green!10,right=of lb,yshift=18mm] (w1) {\textbf{Sys1 Worker (5002)}\\Flask / Gunicorn\\Shared DEM memory};
+  \node[box=green!10,below=of w1] (w2) {\textbf{Sys2 Worker (5002)}\\Flask / Gunicorn};
+  \node[box=green!10,below=of w2] (w3) {\textbf{Sys3 Worker (5002)}\\Flask / Gunicorn};
+  \node[box=green!10,below=of w3] (w4) {\textbf{Sys4 Worker (5002)}\\Flask / Gunicorn};
   \draw[->,line width=1pt] (br) -- node[above,font=\scriptsize]{\texttt{HTTP :5237}} (lb);
   \foreach \w in {w1,w2,w3,w4} \draw[->,line width=0.8pt] (lb.east) -- (\w.west);
   \node[draw,dashed,rounded corners,fit=(w1)(w4),inner sep=3mm,
@@ -146,7 +146,7 @@ The browser makes HTTP requests to port 5237 on Sys1, where the custom Go Load B
 \begin{itemize}
     \item \textbf{Frontend GIS:} HTML5, Vanilla JavaScript, Leaflet 1.9.4, Leaflet.draw 1.0.4, Plotly.js 2.26 (for interactive 3D elevation meshes).
     \item \textbf{Load Balancer:} Written in Go (v1.22+). Chosen for its lightweight goroutine concurrency, microsecond proxy latencies, and minimal memory footprint compared to JVM or Python proxies.
-    \item \textbf{Application Server:} Python 3.12/3.14, Flask, Gunicorn (synchronous worker model, 119 workers per machine matched to available cores).
+    \item \textbf{Application Server:} Python 3.12/3.14, Flask, Gunicorn (synchronous worker model, 8--119 workers per machine matched to available cores).
     \item \textbf{Hydrology Engine:} NumPy, SciPy (multivariate grid interpolation, Gaussian spatial filters, vector operations).
     \item \textbf{Deployment Automation:} Python Paramiko, \texttt{sshpass}, Bash system orchestration.
 \end{itemize}
@@ -219,19 +219,50 @@ The Flask backend provides RESTful JSON endpoints summarized in Table~\ref{tab:a
 \end{table}
 
 \subsection{Frontend and Visualization}
-The frontend interface (Figure~\ref{fig:ui}) displays a multi-layered Leaflet map. A dashed yellow polygon demarcates the active contour dataset boundary. Using the Leaflet.draw toolbar, the user draws an analysis boundary. An asynchronous \texttt{POST /api/analyzeArea} request fires immediately. Once the GeoJSON response arrives (typically $<50$\,ms), the map draws:
+The frontend interface (Figure~\ref{fig:ui}) displays a multi-layered Leaflet map. A dashed yellow polygon demarcates the active contour dataset boundary. Using the Leaflet.draw toolbar, the user draws an analysis boundary (Figure~\ref{fig:ui_drawing}a). An asynchronous \texttt{POST /api/analyzeArea} request fires immediately. The backend processes the request in under $100$\,ms and returns candidate pond rankings and capacity recommendations (Figure~\ref{fig:ui_drawing}b) alongside terrain statistics and structured JSON metadata (Figure~\ref{fig:ui_drawing}c). On the map, the client renders:
 \begin{itemize}
     \item Semi-transparent colored polygons for each upstream catchment.
     \item Solid blue polygons displaying scaled pond footprints.
     \item Marker pins indicating optimal excavation coordinates with popup summaries showing expected volume ($Q$), catchment area, and excavation dimensions.
 \end{itemize}
+Additionally, clicking the ``Interactive 3D Terrain'' button opens a modal 3D WebGL elevation mesh (Figure~\ref{fig:3d_terrain}) rendered via Plotly.js, enabling full $360^\circ$ rotation, zoom, and spatial inspection of candidate depression bowls with elevated 3D pond site markers.
+
+\begin{figure}[t]
+  \centering
+  \includegraphics[width=\linewidth]{ui_result.png}
+  \caption{Web GIS interface (\url{http://10.1.75.51:5237/}) showing analyzed parcel with 4 recommended pond sites, catchment boundaries, and runoff metrics computed in 96\,ms on \texttt{stu10\_sys1}.}
+  \label{fig:ui}
+  \Description{Web interface showing a polygon selected over terrain with four pond markers, colored catchment basins, and volume callouts.}
+\end{figure}
+
+\begin{figure*}[t]
+  \centering
+  \begin{minipage}{0.44\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{ui_drawing.png}
+    \caption*{(a) Interactive parcel drawing inside contour boundary.}
+  \end{minipage}\hfill
+  \begin{minipage}{0.26\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{ui_metrics.png}
+    \caption*{(b) Pond sites \& capacity sizing.}
+  \end{minipage}\hfill
+  \begin{minipage}{0.26\linewidth}
+    \centering
+    \includegraphics[width=\linewidth]{ui_stats_json.png}
+    \caption*{(c) Terrain stats \& API response.}
+  \end{minipage}
+  \caption{Live user workflow: (a) Interactive parcel drawing on Leaflet GIS map; (b) Ranked candidate pond sites and sizing recommendation; (c) Terrain summary statistics and structured JSON API payload served by \texttt{stu10\_sys1}.}
+  \label{fig:ui_drawing}
+  \Description{Three panels illustrating parcel selection, candidate site metrics, and terrain statistics with JSON response.}
+\end{figure*}
 
 \begin{figure}[h]
   \centering
-  \includegraphics[width=\linewidth]{ui_result.png}
-  \caption{Web GIS interface (\url{http://10.1.75.51:5237/}) showing analyzed parcel with recommended pond sites, catchment boundaries, and runoff metrics.}
-  \label{fig:ui}
-  \Description{Web interface showing a polygon selected over terrain with four pond markers and colored catchment basins.}
+  \includegraphics[width=0.88\linewidth]{ui_3d_terrain.png}
+  \caption{Interactive 3D WebGL Terrain Elevation Model with elevated pond sites and contour projection.}
+  \label{fig:3d_terrain}
+  \Description{3D elevation mesh surface with colored elevation gradient and floating pins marking pond sites.}
 \end{figure}
 
 \subsection{Database and Storage}
@@ -253,7 +284,7 @@ Table~\ref{tab:csd-themes} connects the engineering implementation directly to f
     Load Balancing & Custom Go load balancer (\texttt{cluster/pond\_lb.go}) & Least-inflight dispatch prevents fast queries from queuing behind expensive 3D mesh queries; smooths multi-core utilization. \\
     Caching & LRU result cache; Gunicorn \texttt{--preload} DEM memory & Recomputations of Stage A ($0.5$\,s) are eliminated; repeated parcel queries return in $0.2$\,ms. \\
     Data Representation & Flat 2D/1D NumPy arrays with UTM projections & Direct array slicing $i \cdot W + j$ avoids costly geographic coordinate lookups and object allocation overheads. \\
-    Concurrency & Go goroutines in LB; Gunicorn multi-processing & Bypasses Python GIL by running 119 OS processes per node; Go goroutines handle 10,000+ client TCP connections. \\
+    Concurrency & Go goroutines in LB; Gunicorn multi-processing & Bypasses Python GIL by running multiple OS processes per node; Go goroutines handle 10,000+ client TCP connections. \\
     Microservices vs. Monolith & Hybrid: Stateless worker monoliths + micro LB & Avoids distributed microservice network overhead for tightly coupled matrix math, while allowing horizontal scaling. \\
     Design Patterns & Pipeline pattern (hydrology); Reverse Proxy & Hydrology steps (fill $\to$ D8 $\to$ PSI $\to$ catchment) form a pure functional pipeline; LB encapsulates proxy logic. \\
     Network Security & Internal IP binding (172.17.0.x) & Python worker ports are restricted to the internal lab subnet; only the Go LB port 5237 is exposed to users. \\
@@ -380,10 +411,10 @@ The complete source code, deployment scripts, and configuration files are hosted
     \end{itemize}
     \item \texttt{static/}: Frontend Leaflet GIS client, drawing tools, and CSS styling.
     \item \texttt{test\_api.py}: Automated test suite verifying health checks, bounds, and GeoJSON validity.
-    \item \texttt{report/}: Technical report source files (\texttt{Final\_Report.tex}) and figure assets.
+    \item \texttt{report/}: Technical report source files (\texttt{Final_Report.tex}) and figure assets.
 \end{itemize}
 
-\subsection{Cluster Deployment Instructions}
+\subsection{Cluster Deployment Commands}
 To deploy the system on the cluster:
 \begin{lstlisting}[language=bash]
 # 1. Compile Go load balancer on Sys1:

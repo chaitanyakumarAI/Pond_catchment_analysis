@@ -147,6 +147,22 @@
   .img-row img {
     width: 49%;
   }
+  .img-row-3 {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    gap: 8px;
+  }
+  .subfig {
+    text-align: center;
+    font-size: 8.5pt;
+    color: #333;
+  }
+  .subfig img {
+    width: 100%;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+  }
   pre, code {
     font-family: 'Consolas', 'Courier New', monospace;
   }
@@ -304,7 +320,32 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 
 <div class="figure-box">
   <img src="figures/ui_result.png" alt="Application Interface Overlay">
-  <div class="figure-caption">Figure 1: Application interface (<code>http://10.1.75.51:5237/</code>) showing an analyzed agricultural parcel with four recommended pond sites, catchment boundaries, and runoff metrics.</div>
+  <div class="figure-caption">Figure 1: Application interface (<code>http://10.1.75.51:5237/</code>) showing an analyzed agricultural parcel with four recommended pond sites, catchment boundaries, and runoff metrics computed in 96 ms on <code>stu10_sys1</code>.</div>
+</div>
+
+<p>The interactive parcel drawing and metrics pipeline is shown in Figure 2. Using the rectangle or polygon drawing tools, the user specifies the parcel boundary within the contour extent (Figure 2a). Upon mouse release, the client dispatches an asynchronous <code>POST /api/analyzeArea</code> request to the cluster. The response populates the site metrics sidebar (Figure 2b) and returns terrain statistics alongside raw JSON response metadata (Figure 2c). Clicking the &ldquo;Interactive 3D Terrain&rdquo; button opens a modal 3D WebGL elevation mesh (Figure 3) rendered via Plotly.js, enabling full 360&deg; rotation, zoom, and spatial inspection of candidate depression bowls.</p>
+
+<div class="figure-box">
+  <div class="img-row-3">
+    <div class="subfig" style="flex: 1.4;">
+      <img src="figures/ui_drawing.png" alt="Drawing parcel boundary">
+      <div style="margin-top: 4px;">(a) Drawing parcel boundary (722.05 ha)</div>
+    </div>
+    <div class="subfig" style="flex: 0.8;">
+      <img src="figures/ui_metrics.png" alt="Candidate sites overview and Site 1 results">
+      <div style="margin-top: 4px;">(b) Pond sites &amp; capacity sizing</div>
+    </div>
+    <div class="subfig" style="flex: 0.85;">
+      <img src="figures/ui_stats_json.png" alt="Terrain statistics and API JSON response">
+      <div style="margin-top: 4px;">(c) Terrain stats &amp; API response</div>
+    </div>
+  </div>
+  <div class="figure-caption">Figure 2: End-to-end interactive workflow: (a) Drawing agricultural land parcel on map; (b) Ranked candidate pond sites and sizing recommendation; (c) Terrain summary statistics and structured JSON API payload served by <code>stu10_sys1</code>.</div>
+</div>
+
+<div class="figure-box">
+  <img src="figures/ui_3d_terrain.png" style="max-width: 90%;" alt="3D WebGL Terrain Elevation Model">
+  <div class="figure-caption">Figure 3: Interactive 3D WebGL Terrain Elevation Model rendered via Plotly.js, displaying topography relief, candidate pond pins (#1&ndash;#4), and 2D contour projections.</div>
 </div>
 
 <h3>5.3 Database and Storage</h3>
@@ -344,14 +385,14 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 <p><strong>Custom Go Load Balancer vs. Off-the-Shelf Proxies:</strong> Rather than deploying a generic Nginx instance, we engineered a dedicated Go load balancer (<code>pond_lb.go</code>). This enabled custom application-aware admission control: limiting in-flight concurrency per node strictly to its worker capacity (119 requests), buffering request bodies in memory to retry on alternative backends upon HTTP 5xx errors, and providing explicit HTTP 503 shedding with <code>Retry-After</code> headers under flash crowds.</p>
 
 <h2>7. Results and Evaluation</h2>
-<p class="no-indent">The system was validated on <code>contours_1m.kml</code> covering an agricultural tract in Chhattisgarh (21.245&deg; N, 81.295&deg; E). Figure 2 displays the interpolated DEM and the derived D8 flow accumulation network.</p>
+<p class="no-indent">The system was validated on <code>contours_1m.kml</code> covering an agricultural tract in Chhattisgarh (21.245&deg; N, 81.295&deg; E). Figure 4 displays the interpolated DEM and the derived D8 flow accumulation network.</p>
 
 <div class="figure-box">
   <div class="img-row">
     <img src="figures/dem_heatmap.png" alt="DEM Heatmap with Sites">
     <img src="figures/flow_accumulation.png" alt="Flow Accumulation">
   </div>
-  <div class="figure-caption">Figure 2: Interpolated DEM with candidate pond locations (left) and D8 flow accumulation network (right).</div>
+  <div class="figure-caption">Figure 4: Interpolated DEM with candidate pond locations (left) and D8 flow accumulation network (right).</div>
 </div>
 
 <p class="no-indent">Table 4 details empirical results for various test parcels. The top site remained mathematically identical to the whole-map ground truth, confirming the consistency of our parcel masking algorithm.</p>
@@ -380,7 +421,7 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 </table>
 
 <h3>7.1 Performance and Cluster Load Testing</h3>
-<p class="no-indent">Load testing was conducted using Locust across concurrency levels from 10 to 200 users. Table 5 and Figure 3 illustrate the scaling benefits of our 3-node cluster deployment (360 active CPU cores) compared to a single-node server.</p>
+<p class="no-indent">Load testing was conducted using Locust across concurrency levels from 10 to 200 users. Table 5 and Figure 5 illustrate the scaling benefits of our 3-node cluster deployment (360 active CPU cores) compared to a single-node server.</p>
 
 <div class="caption">Table 5: Empirical stress test results (Single node vs. 3-node cluster via pond_lb)</div>
 <table class="booktabs">
@@ -409,7 +450,7 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 
 <div class="figure-box">
   <img src="figures/stress_plot.png" alt="Stress Test Plot">
-  <div class="figure-caption">Figure 3: Throughput, p95 latency, and error rates under increasing concurrent load. The cluster maintains sub-120 ms latency at 200 users.</div>
+  <div class="figure-caption">Figure 5: Throughput, p95 latency, and error rates under increasing concurrent load. The cluster maintains sub-120 ms latency at 200 users.</div>
 </div>
 
 <h2>8. Discussion and Limitations</h2>
