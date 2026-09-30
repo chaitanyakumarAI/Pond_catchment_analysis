@@ -288,8 +288,8 @@
 <br><center><b>PSI = 0.35 &middot; d&#770; + 0.30 &middot; ln(1+A)&#770; + 0.20 &middot; TWI&#770; + 0.15 &middot; (1 &minus; z&#770;)</b></center><br>
 where <b>&#770;</b> denotes min&ndash;max normalization, <b>z&#770;</b> is normalized elevation, and <b>TWI = ln(a / tan &beta;)</b> represents the Topographic Wetness Index for specific catchment area <i>a</i> and slope <i>&beta;</i>. In Stage B, local maxima of the PSI within the drawn polygon are selected and upstream catchments are delineated via reverse-D8 traversal.</p>
 
-<h3>4.3 Rainfall and Runoff Integration</h3>
-<p>Annual rainfall depth (<i>P</i>, default 850 mm) and runoff coefficient (<i>C</i>, default 0.35) are integrated using the Rational Method:
+<h3>4.3 Rainfall Data Integration</h3>
+<p class="no-indent">Precipitation parameters are calibrated against Indian Meteorological Department (IMD) historical normals and Open-Meteo climate reanalysis archives for the central Chhattisgarh agricultural zone. Annual rainfall depth (<i>P</i>, default 850 mm) and surface runoff coefficient (<i>C</i>, default 0.35 for mixed agricultural loam) are integrated into the catchment runoff model using the standard Rational Method:
 <br><center><b>Q = C &middot; (P / 1000) &middot; (A<sub>catchment</sub> &times; 10<sup>4</sup>) &nbsp; [m&sup3;/year]</b></center><br>
 Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middot; Q, 25,000) m&sup3;</b>, assuming a typical depth <i>H = 3.5 m</i> with 1:1.5 side slopes.</p>
 
@@ -421,7 +421,7 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
   </tbody>
 </table>
 
-<h3>7.1 Performance and Cluster Load Testing</h3>
+<h3>7.1 Performance</h3>
 <p class="no-indent">Load testing was conducted using Locust across concurrency levels from 10 to 200 users. Table 5 and Figure 5 illustrate the scaling benefits of our 3-node cluster deployment (360 active CPU cores) compared to a single-node server.</p>
 
 <div class="caption">Table 5: Empirical stress test results (Single node vs. 3-node cluster via pond_lb)</div>
@@ -474,7 +474,7 @@ Recommended pond capacity is determined as <b>V<sub>pond</sub> = min(0.18 &middo
 
 <div class="page-break"></div>
 
-<h2>Appendix: Source Code, Deployment and Video Demonstration</h2>
+<h2>Appendix: Source Code and Repository</h2>
 <p class="no-indent"><strong>GitHub Repository:</strong> <a href="https://github.com/chaitanyakumarAI/Pond_catchment_analysis">https://github.com/chaitanyakumarAI/Pond_catchment_analysis</a><br>
 <strong>Live Deployment:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a><br>
 <strong>YouTube Video Demonstration:</strong> <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a></p>

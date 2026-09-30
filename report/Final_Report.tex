@@ -1,8 +1,8 @@
 %%
-%% CSD Assignment 1 - Final Technical Report
+%% CSD Assignment 1 - Final Technical Report Template
 %% Based on the ACM "acmart" manuscript (single-column) style.
 %%
-\documentclass[manuscript,screen,nonacm]{acmart}
+\documentclass[manuscript,screen,review]{acmart}
 
 \usepackage{booktabs}
 \usepackage{graphicx}
@@ -23,6 +23,16 @@
 
 \AtBeginDocument{%
   \providecommand\BibTeX{{Bib\TeX}}}
+
+%% ------------------------------------------------------------------
+%% This is a COURSE ASSIGNMENT report, not an ACM publication, so the
+%% rights-management / DOI / ISBN block from the original ACM sample
+%% is not required. It is left commented out below in case your
+%% instructor asks you to keep the ACM-style header block.
+%% ------------------------------------------------------------------
+% \setcopyright{acmlicensed}
+% \acmConference[CSD Assignment 1]{Course: Computer Science and Design}{2026}{IIT Bhilai}
+% \acmISBN{}
 
 \begin{document}
 
@@ -190,8 +200,8 @@ where $\hat{\cdot}$ denotes min--max normalization, $\hat{z}$ is normalized elev
 When a user draws a polygon in Stage B, candidate sites are selected from the local maxima of the PSI within the polygon, constrained by:
 (1) minimum upstream catchment $A \ge 1$\,ha, (2) spatial separation $\ge 350$\,m, and (3) a cap of at most 4 sites. Upstream catchment boundaries are delineated by recursively following reverse-D8 paths starting from the candidate pour point.
 
-\subsection{Rainfall and Runoff Integration}
-Annual rainfall depth ($P$, default $850$\,mm based on local meteorological records) and runoff coefficient ($C$, default $0.35$ for mixed agricultural loam) are integrated using the standard Rational Method:
+\subsection{Rainfall Data Integration}
+Precipitation parameters are calibrated against Indian Meteorological Department (IMD) historical normals and Open-Meteo climate reanalysis archives for the central Chhattisgarh agricultural zone. Annual rainfall depth ($P$, default $850$\,mm) and surface runoff coefficient ($C$, default $0.35$ for mixed agricultural loam) are integrated into the catchment runoff model using the standard Rational Method:
 \begin{equation}
     Q = C \cdot \left(\frac{P}{1000}\right) \cdot \left(A_{\text{catchment}} \times 10^4\right) \quad [\text{m}^3/\text{year}]
 \end{equation}
@@ -306,14 +316,14 @@ Table~\ref{tab:csd-themes} connects the engineering implementation directly to f
 %% =====================================================================
 \section{Results and Evaluation}
 \label{sec:results}
-The system was validated on \texttt{contours\_1m.kml} covering a rural region in Chhattisgarh, India ($21.245^\circ$\,N, $81.295^\circ$\,E). Figure~\ref{fig:hydrology} illustrates the generated DEM and D8 flow accumulation grids.
+The system was validated on \texttt{contours\_1m.kml} covering a rural region in Chhattisgarh, India ($21.245^\circ$\,N, $81.295^\circ$\,E). Figure~\ref{fig:results} illustrates the generated DEM and D8 flow accumulation grids.
 
 \begin{figure}[h]
   \centering
   \includegraphics[width=0.48\linewidth]{dem_heatmap.png}\hfill
   \includegraphics[width=0.48\linewidth]{flow_accumulation.png}
-  \caption{Interpolated DEM with candidate pond locations (left) and D8 flow accumulation network (right).}
-  \label{fig:hydrology}
+  \caption{Representative results overlay: Interpolated DEM with candidate pond locations (left) and D8 flow accumulation network (right).}
+  \label{fig:results}
   \Description{Two side-by-side maps showing elevation heatmap and flow accumulation lines.}
 \end{figure}
 
@@ -336,7 +346,7 @@ Table~\ref{tab:eval} summarizes area queries across various parcel geometries. T
   \end{tabular}
 \end{table}
 
-\subsection{Performance and Cluster Load Testing}
+\subsection{Performance}
 Stress testing was performed using Locust simulating concurrent users executing a realistic query distribution (60\% new parcels, 20\% cached queries, 10\% whole-map views, 10\% static assets). Table~\ref{tab:stress} and Figure~\ref{fig:stress} compare a standalone single-node worker against the 3-node distributed cluster (360 active CPU cores).
 
 \begin{table}[h]
@@ -391,7 +401,7 @@ All AI-generated code, algorithms, and technical texts were rigorously reviewed,
 %% =====================================================================
 \appendix
 
-\section{Source Code, Deployment, and Video Demonstration}
+\section{Source Code and Repository}
 \label{sec:repo}
 The complete source code, deployment scripts, and configuration files are hosted on GitHub:
 \begin{center}
