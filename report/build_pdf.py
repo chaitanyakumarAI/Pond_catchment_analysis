@@ -10,56 +10,69 @@ html_template = """<!DOCTYPE html>
 <style>
   @page {
     size: A4;
-    margin: 22mm 20mm 22mm 20mm;
+    margin: 22mm 22mm 22mm 22mm;
     @bottom-center {
       content: counter(page);
-      font-family: 'Times New Roman', Times, serif;
-      font-size: 10pt;
+      font-family: 'Linux Libertine', 'Times New Roman', Times, serif;
+      font-size: 9.5pt;
     }
   }
   body {
-    font-family: 'Times New Roman', Times, serif;
-    font-size: 10.5pt;
-    line-height: 1.45;
-    color: #111;
+    font-family: 'Linux Libertine', 'Liberation Serif', 'Times New Roman', Times, serif;
+    font-size: 10pt;
+    line-height: 1.42;
+    color: #000;
     margin: 0;
     padding: 0;
   }
   h1.title {
-    font-size: 19pt;
+    font-size: 17pt;
     font-weight: bold;
-    text-align: center;
+    text-align: left;
+    margin-top: 6px;
     margin-bottom: 4px;
+    letter-spacing: -0.2px;
   }
   div.subtitle {
-    font-size: 12pt;
-    text-align: center;
-    color: #444;
-    margin-bottom: 14px;
+    font-size: 11pt;
+    text-align: left;
+    color: #222;
+    margin-bottom: 12px;
   }
   div.authors {
-    text-align: center;
-    margin-bottom: 20px;
-    font-size: 10.5pt;
-    line-height: 1.35;
+    text-align: left;
+    margin-bottom: 16px;
+    font-size: 9.5pt;
+    line-height: 1.4;
+  }
+  .author-name {
+    font-variant: small-caps;
+    font-weight: bold;
+    letter-spacing: 0.5px;
   }
   div.abstract-box {
-    margin: 0 10px 18px 10px;
+    margin: 12px 14px 16px 14px;
     font-size: 9.5pt;
-    line-height: 1.38;
+    line-height: 1.35;
     text-align: justify;
-    background: #fdfdfd;
-    padding: 8px 12px;
-    border: 1px solid #ebebeb;
-    border-radius: 4px;
+    padding: 0;
+    background: transparent;
+    border: none;
   }
   div.abstract-title {
     font-weight: bold;
     display: inline;
+    font-variant: small-caps;
   }
   div.keywords {
     margin-top: 8px;
     font-size: 9pt;
+  }
+  div.acm-ref {
+    margin-top: 10px;
+    font-size: 8.5pt;
+    line-height: 1.3;
+    text-align: justify;
   }
   hr.sep {
     border: none;
@@ -67,20 +80,19 @@ html_template = """<!DOCTYPE html>
     margin: 14px 0;
   }
   h2 {
-    font-size: 12.5pt;
+    font-size: 11.5pt;
     font-weight: bold;
-    text-transform: uppercase;
-    letter-spacing: 0.5px;
-    margin-top: 20px;
-    margin-bottom: 6px;
-    border-bottom: 1px solid #222;
-    padding-bottom: 2px;
+    margin-top: 18px;
+    margin-bottom: 5px;
+    border-bottom: none;
+    padding-bottom: 0;
+    letter-spacing: 0;
   }
   h3 {
-    font-size: 11pt;
+    font-size: 10.5pt;
     font-weight: bold;
     margin-top: 12px;
-    margin-bottom: 4px;
+    margin-bottom: 3px;
   }
   p {
     margin-top: 0;
@@ -195,19 +207,23 @@ html_template = """<!DOCTYPE html>
 <div class="subtitle">CSD Assignment 1 &mdash; Final Technical Report</div>
 
 <div class="authors">
-  <strong>Ranga Chandra Naga Venkata Chaitanya Kumar</strong> (Roll No. 12341740)<br>
-  Department of Computer Science and Engineering, IIT Bhilai, India<br>
-  <code>chaitanya.kumar@iitbhilai.ac.in</code><br>
-  <strong>GitHub:</strong> <a href="https://github.com/chaitanyakumarAI/Pond_catchment_analysis">https://github.com/chaitanyakumarAI/Pond_catchment_analysis</a> &nbsp;|&nbsp; 
-  <strong>Live System:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a><br>
-  <strong>YouTube Video Demonstration:</strong> <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>
+  <span class="author-name">Ranga Chandra Naga Venkata Chaitanya Kumar</span>, Department of Computer Science and Engineering, IIT Bhilai, India, <code>chaitanya.kumar@iitbhilai.ac.in</code><br>
+  <span style="font-size: 8.5pt; color: #333;">
+    <strong>GitHub:</strong> <a href="https://github.com/chaitanyakumarAI/Pond_catchment_analysis">chaitanyakumarAI/Pond_catchment_analysis</a> &nbsp;|&nbsp; 
+    <strong>Live System:</strong> <a href="http://10.1.75.51:5237/">http://10.1.75.51:5237/</a> &nbsp;|&nbsp; 
+    <strong>Video Demonstration:</strong> <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>
+  </span>
 </div>
 
 <div class="abstract-box">
-  <div class="abstract-title">ABSTRACT.</div>
-  Small-scale farm ponds are a vital rainwater-harvesting intervention for mitigating seasonal drought and enhancing agricultural resilience across rural India. However, traditional manual site-selection approaches rely on labor-intensive, ad-hoc topographical field surveys that struggle to analyze spatial hydrology across extensive areas. This project presents a high-throughput, web-based geospatial decision-support system designed to identify optimal village pond locations, delineate catchment boundaries, and calculate expected annual rainwater runoff. Built on an interactive Leaflet GIS interface, the user selects any arbitrary agricultural parcel or village boundary via polygon and rectangle drawing tools. The backend processes contour maps to construct high-resolution Digital Elevation Models (DEMs), executes Priority-Flood sink filling, delineates D8 hydrological flow routing, and computes a multi-criteria Pond Suitability Index (PSI) combining depression depth, upstream flow accumulation, topographic wetness index (TWI), and relative slope elevation. To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120 ms and 0% error rates, compared to severe saturation on a single-node deployment. The production web application is live and publicly accessible at <code>http://10.1.75.51:5237/</code>, with an accompanying video demonstration at <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>.
+  <div class="abstract-title">ABSTRACT</div><br>
+  <em>Small-scale farm ponds are a vital rainwater-harvesting intervention for mitigating seasonal drought and enhancing agricultural resilience across rural India. However, traditional manual site-selection approaches rely on labor-intensive, ad-hoc topographical field surveys that struggle to analyze spatial hydrology across extensive areas. This project presents a high-throughput, web-based geospatial decision-support system designed to identify optimal village pond locations, delineate catchment boundaries, and calculate expected annual rainwater runoff. Built on an interactive Leaflet GIS interface, the user selects any arbitrary agricultural parcel or village boundary via polygon and rectangle drawing tools. The backend processes contour maps to construct high-resolution Digital Elevation Models (DEMs), executes Priority-Flood sink filling, delineates D8 hydrological flow routing, and computes a multi-criteria Pond Suitability Index (PSI) combining depression depth, upstream flow accumulation, topographic wetness index (TWI), and relative slope elevation. To achieve sub-second interactive latency while serving hundreds of concurrent village administrators, the system decouples heavy one-time terrain modeling from lightweight, millisecond-scale polygon queries. The architecture is deployed as a horizontally scaled cluster across four multi-core lab systems (120 CPU cores each) orchestrated by a custom Layer-7 Load Balancer implemented in Go, featuring least-inflight connection routing, active health probes, and admission control. Under stress testing with 200 concurrent users, the distributed cluster sustained 138.7 requests per second with a 95th-percentile latency under 120 ms and 0% error rates, compared to severe saturation on a single-node deployment. The production web application is live and publicly accessible at <code>http://10.1.75.51:5237/</code>, with an accompanying video demonstration at <a href="https://youtu.be/EMeGVMf4Mug">https://youtu.be/EMeGVMf4Mug</a>.</em>
   <div class="keywords">
-    <strong>Keywords:</strong> Village Pond Planning, Geospatial Hydrology, Digital Elevation Models, Rainwater Harvesting, Catchment Delineation, Layer-7 Load Balancing, Web GIS, Distributed Systems
+    <strong>Additional Key Words and Phrases:</strong> Village Pond Planning, Geospatial Hydrology, Digital Elevation Models, Rainwater Harvesting, Catchment Delineation, Layer-7 Load Balancing, Web GIS, Distributed Systems
+  </div>
+  <div class="acm-ref">
+    <strong>ACM Reference Format:</strong><br>
+    Ranga Chandra Naga Venkata Chaitanya Kumar. 2026. AI-based Village Pond Planning System: CSD Assignment 1 &mdash; Final Technical Report. In <em>Proceedings of CSD Assignment 1</em>, 10 pages. <a href="https://doi.org/10.1145/nnnnnnn.nnnnnnn">https://doi.org/10.1145/nnnnnnn.nnnnnnn</a>
   </div>
 </div>
 
