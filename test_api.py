@@ -3,6 +3,8 @@ import sys
 import time
 import requests
 
+sys.stdout.reconfigure(encoding='utf-8')
+
 BASE_URL = sys.argv[1] if len(sys.argv) > 1 else "http://10.1.75.51:5237"
 PARCEL = [[81.29, 21.245], [81.30, 21.245], [81.30, 21.254], [81.29, 21.254], [81.29, 21.245]]
 

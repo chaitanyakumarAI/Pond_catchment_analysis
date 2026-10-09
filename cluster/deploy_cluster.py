@@ -63,9 +63,9 @@ def ssh(port, password):
 
 
 def run(c, cmd, tag):
-    _, out, err = c.exec_command(cmd, get_pty=True)
+    _, out, err = c.exec_command(cmd, get_pty=False)
     for line in iter(out.readline, ''):
-        print(f'  [{tag}] {line.rstrip()}')
+        print(f'  [{tag}] {line.rstrip()}', flush=True)
     return out.channel.recv_exit_status()
 
 
@@ -83,8 +83,8 @@ def deploy_node(name, password, tarball):
            + 'echo cores=$(nproc)', name)
     _, out, _ = c.exec_command('nproc')
     cores = int(out.read().decode().strip() or 1)
-    # Sys1 also runs the LB → keep one core free for it
-    workers = max(1, cores - 1) if name == 'sys1' else max(1, cores)
+    # Cap at 16 workers per node for fast boot & stability
+    workers = min(16, max(1, cores - 1 if name == 'sys1' else cores))
     code = run(c, f'WORKER_PORT={CONFIG["worker_port"]} bash ~/pond/cluster/start_worker.sh {name} {workers}', name)
     c.close()
     return code == 0, workers
@@ -122,12 +122,19 @@ def main():
         return status()
     if not os.path.exists(os.path.join(ROOT, 'cluster', 'pond_lb')):
         sys.exit('cluster/pond_lb binary missing — build it: cd cluster && GOOS=linux GOARCH=amd64 go build -o pond_lb .')
-    pw = os.environ.get('POND_SSH_PASS') or getpass.getpass('SSH password: ')
+    pw_default = os.environ.get('POND_SSH_PASS')
+    pw_sys4 = os.environ.get('POND_SSH_PASS_SYS4') or pw_default
+    if not pw_default:
+        pw_default = getpass.getpass('SSH password (sys1, sys2, sys3): ')
+        pw_sys4 = os.environ.get('POND_SSH_PASS_SYS4') or getpass.getpass('SSH password for sys4 [Enter if same]: ') or pw_default
+    passwords = {'sys1': pw_default, 'sys2': pw_default, 'sys3': pw_default, 'sys4': pw_sys4}
+
     tarball = bundle()
     print(f'bundle: {len(tarball)/1e6:.1f} MB')
     ok_workers = []
     for n in a.nodes:
         try:
+            pw = passwords.get(n, passwords['sys1'])
             ok, w = deploy_node(n, pw, tarball)
             if ok:
                 ok_workers.append(w)
@@ -136,7 +143,7 @@ def main():
     if not ok_workers:
         sys.exit('no worker started')
     if 'sys1' in a.nodes:
-        start_lb(pw, max_inflight=min(ok_workers))
+        start_lb(passwords['sys1'], max_inflight=min(ok_workers))
     time.sleep(4)
     status()
     print(f'\nFront-end URL: {CONFIG["public_url"]}/')

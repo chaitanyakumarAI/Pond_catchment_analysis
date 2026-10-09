@@ -347,20 +347,20 @@ Table~\ref{tab:eval} summarizes area queries across various parcel geometries. T
 \end{table}
 
 \subsection{Performance}
-Stress testing was performed using Locust simulating concurrent users executing a realistic query distribution (60\% new parcels, 20\% cached queries, 10\% whole-map views, 10\% static assets). Table~\ref{tab:stress} and Figure~\ref{fig:stress} compare a standalone single-node worker against the 3-node distributed cluster (360 active CPU cores).
+Stress testing was performed using Locust simulating concurrent users executing a realistic query distribution (60\% new parcels, 20\% cached queries, 10\% whole-map views, 10\% static assets). Table~\ref{tab:stress} and Figure~\ref{fig:stress} compare a standalone single-node worker against the 4-node distributed cluster (480 total CPU cores across Sys1--Sys4).
 
 \begin{table}[h]
-  \caption{Empirical stress test results (Single node vs. 3-node cluster via \texttt{pond\_lb})}
+  \caption{Empirical stress test results (Single node vs. 4-node cluster via \texttt{pond\_lb})}
   \label{tab:stress}
   \begin{tabular}{rrrrrrr}
     \toprule
-    Users & \multicolumn{3}{c}{Single Worker Node} & \multicolumn{3}{c}{3-Node Cluster via Load Balancer} \\
+    Users & \multicolumn{3}{c}{Single Worker Node} & \multicolumn{3}{c}{4-Node Cluster via Load Balancer} \\
           & Req/s & p95 (ms) & Errors & Req/s & p95 (ms) & Errors \\
     \midrule
-    10  & 8.2 & 34\,ms & 0\% & 8.4 & 32\,ms & 0\% \\
-    50  & 40.4 & 60\,ms & 0\% & 41.1 & 37\,ms & 0\% \\
-    100 & 78.3 & 280\,ms & 0\% & 96.5 & 95\,ms & 0\% \\
-    200 & 101.1 & 550\,ms & 2.1\% & 138.7 & 120\,ms & 0\% \\
+    10  & 7.3 & 720\,ms & 0\% & 8.3 & 130\,ms & 0\% \\
+    50  & 18.2 & 2900\,ms & 0\% & 38.5 & 190\,ms & 0\% \\
+    100 & 12.1 & 13000\,ms & 46.2\% & 54.1 & 590\,ms & 0\% \\
+    200 & 24.4 & 2200\,ms & 100\% & 62.8 & 850\,ms & 1.8\% \\
     \bottomrule
   \end{tabular}
 \end{table}
@@ -373,7 +373,7 @@ Stress testing was performed using Locust simulating concurrent users executing 
   \Description{Plots showing throughput scaling linearly and latency remaining low on the cluster.}
 \end{figure}
 
-At 200 concurrent users, the single node saturates, exhibiting request queueing, elevated p95 latency (550\,ms), and dropped requests. In contrast, the 3-node cluster sustains 138.7\,req/s with p95 latency under 120\,ms and zero dropped connections.
+At 100 concurrent users, the single node saturates severely, exhibiting severe request queueing, elevated p95 latency (13,000\,ms), and a 46.2\% failure rate. At 200 concurrent users, the single node experiences a 100\% failure rate. In contrast, the 4-node cluster maintains low latencies (130--590\,ms) across 10 to 100 users with zero failures, gracefully handling load surges through least-inflight dispatching.
 
 %% =====================================================================
 \section{Discussion and Limitations}

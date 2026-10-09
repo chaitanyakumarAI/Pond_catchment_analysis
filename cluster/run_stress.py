@@ -25,8 +25,14 @@ OUT = os.path.join(os.path.dirname(HERE), 'results')
 
 def run_level(name, host, users, duration):
     prefix = os.path.join(OUT, f'{name}_u{users}')
+    def to_float(v, default=0.0):
+        try:
+            return float(v)
+        except (ValueError, TypeError):
+            return default
+
     cmd = [sys.executable, '-m', 'locust', '-f', os.path.join(HERE, 'locustfile.py'),
-           '--host', host, '--headless', '-u', str(users), '-r', str(max(1, users // 5)),
+           '--host', host, '--headless', '-u', str(users), '-r', str(max(20, users)),
            '-t', f'{duration}s', '--csv', prefix, '--only-summary']
     print(f'[{name}] {users} users for {duration}s …', flush=True)
     subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -40,9 +46,9 @@ def run_level(name, host, users, duration):
         'requests': int(agg['Request Count']),
         'failures': int(agg['Failure Count']),
         'error_pct': round(100 * int(agg['Failure Count']) / n, 2),
-        'throughput_rps': round(float(agg['Requests/s']), 2),
-        'p50_ms': float(agg['50%']), 'p95_ms': float(agg['95%']), 'p99_ms': float(agg['99%']),
-        'area_p50_ms': float(area['50%']), 'area_p95_ms': float(area['95%']),
+        'throughput_rps': round(to_float(agg.get('Requests/s')), 2),
+        'p50_ms': to_float(agg.get('50%')), 'p95_ms': to_float(agg.get('95%')), 'p99_ms': to_float(agg.get('99%')),
+        'area_p50_ms': to_float(area.get('50%')), 'area_p95_ms': to_float(area.get('95%')),
     }
 
 
@@ -82,8 +88,11 @@ def main():
     with open(path, 'w', newline='') as f:
         w = csv.DictWriter(f, fieldnames=list(results[0].keys()))
         w.writeheader(); w.writerows(results)
-    plot(results, os.path.join(OUT, 'stress_plot.png'))
-    print('wrote', path, 'and results/stress_plot.png')
+    plot_path = os.path.join(OUT, 'stress_plot.png')
+    plot(results, plot_path)
+    import shutil
+    shutil.copy(plot_path, os.path.join(os.path.dirname(OUT), 'report', 'stress_plot.png'))
+    print('wrote', path, 'and', plot_path)
 
 
 if __name__ == '__main__':

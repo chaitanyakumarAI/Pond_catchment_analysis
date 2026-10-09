@@ -17,14 +17,16 @@ python3 -c "import flask, flask_cors, numpy, scipy, pyproj, shapely, matplotlib"
 pkill -f "gunicorn.*app:app" 2>/dev/null
 pkill -f "Pond_catchment/app.py" 2>/dev/null
 pkill -f "pond/app.py" 2>/dev/null
+pkill -f "python3.*app.py" 2>/dev/null
+ss -tlnp "sport = :$PORT" 2>/dev/null | grep -oP 'pid=\K[0-9]+' | xargs -r kill -9 2>/dev/null || true
 sleep 1
 export PATH="$HOME/.local/bin:$PATH"
 if python3 -c "import gunicorn" 2>/dev/null; then
   NODE_NAME=$NODE WORKER_PORT=$PORT WORKERS=$WORKERS ACCESS_LOG=/dev/null \
-    nohup python3 -m gunicorn -c cluster/gunicorn.conf.py app:app > "$APP_DIR/worker.log" 2>&1 &
+    setsid python3 -m gunicorn -c cluster/gunicorn.conf.py app:app </dev/null > "$APP_DIR/worker.log" 2>&1 &
   MODE="gunicorn x$WORKERS"
 else
-  NODE_NAME=$NODE PORT=$PORT nohup python3 "$APP_DIR/app.py" > "$APP_DIR/worker.log" 2>&1 &
+  NODE_NAME=$NODE PORT=$PORT setsid python3 "$APP_DIR/app.py" </dev/null > "$APP_DIR/worker.log" 2>&1 &
   MODE="flask threaded (gunicorn unavailable)"
 fi
 
